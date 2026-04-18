@@ -29,6 +29,7 @@ Fullscreen animated Mandelbrot/Multibrot background ported from Processing.
 Main runtime knobs are at the top of [`app.js`](./app.js):
 - `PICK_DEPTH`: deeper boundary search (`16` by default)
 - `POWER_OPTIONS`: frequency of power values per scene
+- `COLOR_COVERAGE_TARGET`: percent of colored pixels before switching scenes (`0.975` by default)
 - `MAX_SCENE_FRAMES`: hard upper bound on scene lifetime
-- `SPARSE_THRESHOLD` and `REFRESH_MIN_FRAMES`: auto-refresh behavior
+- `SAMPLE_EVERY_N_FRAMES`: how often scene-switch metrics are sampled
 - `MIN_RENDER_RADIUS` and `PRECISION_RADIUS_FACTOR`: depth vs precision safety

@@ -1,7 +1,6 @@
 const SCALE = 1;
 const MOD = 300;
-const REFRESH_MIN_FRAMES = 75;
-const SPARSE_THRESHOLD = 50;
+const COLOR_COVERAGE_TARGET = 0.975;
 const SAMPLE_EVERY_N_FRAMES = 6;
 const PICK_DEPTH = 16;
 const PICK_GRID = 200;
@@ -9,7 +8,7 @@ const SAMPLE_TARGET_PIXELS = 4096;
 const MIN_RENDER_RADIUS = 5.0e-5;
 const FLOAT32_REL_EPS = 1.1920929e-7;
 const PRECISION_RADIUS_FACTOR = 0.2;
-const MAX_SCENE_FRAMES = 900;
+const MAX_SCENE_FRAMES = 1800;
 const POWER_OPTIONS = [2, 2, 2, 3, 3, 4, 5];
 const MAX_POWER = 8;
 const SCENE_PREP_MAX_ITERS = 20000;
@@ -633,7 +632,6 @@ function handleResize() {
   counter = 0;
   frameCounter = 0;
 
-  applyScene({ cx, cy, r, power });
   requestPick();
 }
 
@@ -761,10 +759,7 @@ function applyScene(scene) {
   sceneJustReset = true;
 
   clearSimulationTextures();
-  const prepared = prepareSceneStateForSecondFrameColor(Math.max(0, scene.preIter | 0));
-  if (!prepared) {
-    refreshRequested = true;
-  }
+  prepareSceneStateForSecondFrameColor(Math.max(0, scene.preIter | 0));
   sceneActive = true;
 }
 
@@ -1048,15 +1043,14 @@ function runStateOnlyPass() {
   currentIndex = 1 - currentIndex;
 }
 
-function estimateChangedPixels() {
+function estimateColorCoverage() {
   if (!sampleTarget) {
-    return Number.POSITIVE_INFINITY;
+    return 0;
   }
   const src = renderTargets[currentIndex];
-  const sum = sampleTextureSum(src.deltaTex, false);
-  const normalizedEscapes = sum / 255;
-  const scale = (simCols * simRows) / (sampleTarget.width * sampleTarget.height);
-  return normalizedEscapes * scale;
+  const sum = sampleTextureSum(src.colorTex, true);
+  const maxSum = 255 * sampleTarget.width * sampleTarget.height;
+  return maxSum > 0 ? sum / maxSum : 0;
 }
 
 function hasNextEscapePixels() {
@@ -1214,9 +1208,9 @@ function renderLoop() {
   counter += 1;
   frameCounter += 1;
 
-  if (counter > REFRESH_MIN_FRAMES && frameCounter % SAMPLE_EVERY_N_FRAMES === 0) {
-    const changedEstimate = estimateChangedPixels();
-    if (changedEstimate <= SPARSE_THRESHOLD) {
+  if (frameCounter % SAMPLE_EVERY_N_FRAMES === 0) {
+    const coverage = estimateColorCoverage();
+    if (coverage >= COLOR_COVERAGE_TARGET) {
       refreshRequested = true;
     }
   }
