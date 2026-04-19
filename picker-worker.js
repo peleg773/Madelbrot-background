@@ -1,6 +1,7 @@
 const MIN_CY_ABS = 0.001;
-const MAX_PICK_RETRIES = 40;
-const MIN_RENDER_RADIUS = 5.0e-5;
+const MAX_PICK_RETRIES = 64;
+const MIN_RENDER_RADIUS = 1.0e-5;
+const PICK_TARGET_RADIUS_FACTOR = 2.0;
 const MAX_POWER = 8;
 const PREITER_MAX_ITERS = 2048;
 const PREITER_MAX_COLS = 320;
@@ -47,15 +48,26 @@ self.addEventListener("message", (event) => {
 
 function findValidBoundaryPoint(aspect, depth, grid, minRadius, scenePower) {
   let fallback = null;
+  let best = null;
+  const targetRadius = minRadius * PICK_TARGET_RADIUS_FACTOR;
 
   for (let attempt = 0; attempt < MAX_PICK_RETRIES; attempt += 1) {
     const point = pickBoundaryPoint(aspect, depth, grid, minRadius, scenePower);
     fallback = point;
-    if (Math.abs(point.cy) > MIN_CY_ABS) {
-      return point;
+    if (Math.abs(point.cy) <= MIN_CY_ABS) {
+      continue;
+    }
+    if (!best || point.r < best.r) {
+      best = point;
+    }
+    if (point.r <= targetRadius) {
+      break;
     }
   }
 
+  if (best) {
+    return best;
+  }
   return fallback || { cx: -0.75, cy: 0.3, r: minRadius };
 }
 

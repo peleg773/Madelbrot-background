@@ -2,12 +2,12 @@ const SCALE = 1;
 const MOD = 300;
 const COLOR_COVERAGE_TARGET = 0.975;
 const SAMPLE_EVERY_N_FRAMES = 6;
-const PICK_DEPTH = 16;
+const PICK_DEPTH = 20;
 const PICK_GRID = 200;
 const SAMPLE_TARGET_PIXELS = 4096;
-const MIN_RENDER_RADIUS = 5.0e-5;
+const MIN_RENDER_RADIUS = 1.0e-5;
 const FLOAT32_REL_EPS = 1.1920929e-7;
-const PRECISION_RADIUS_FACTOR = 0.2;
+const PRECISION_RADIUS_FACTOR = 0.1;
 const MAX_SCENE_FRAMES = 1800;
 const POWER_OPTIONS = [2, 2, 2, 3, 3, 4, 5];
 const MAX_POWER = 8;
@@ -17,7 +17,8 @@ const PREITER_MAX_COLS = 320;
 const PREITER_MAX_ROWS = 180;
 
 const PICK_MIN_CY_ABS = 0.001;
-const PICK_MAX_RETRIES = 40;
+const PICK_MAX_RETRIES = 64;
+const PICK_TARGET_RADIUS_FACTOR = 2.0;
 
 const FULLSCREEN_TRIANGLES = 3;
 
@@ -233,7 +234,7 @@ function createPrograms() {
         float zMag = sqrt(mag2);
         float val = -(log(log(zMag)) / uLogPower);
         float mapped = mix(255.0 * (1.0 - uDir), 255.0 * uDir, (uOff + val) / uMod);
-        float hue = clamp(mapped / 255.0, 0.0, 1.0);
+        float hue = fract(mapped / 255.0);
         vec3 rgb = hsvToRgb(vec3(hue, 1.0, 1.0));
 
         outState = zNew;
@@ -760,6 +761,7 @@ function applyScene(scene) {
 
   clearSimulationTextures();
   prepareSceneStateForSecondFrameColor(Math.max(0, scene.preIter | 0));
+  primeSecondFrameColors();
   sceneActive = true;
 }
 
@@ -792,15 +794,26 @@ function pickSceneLocal(request) {
 
 function findValidBoundaryPointLocal(localAspect, depth, grid, minRadius, scenePower) {
   let fallback = null;
+  let best = null;
+  const targetRadius = minRadius * PICK_TARGET_RADIUS_FACTOR;
 
   for (let attempt = 0; attempt < PICK_MAX_RETRIES; attempt += 1) {
     const point = pickBoundaryPointLocal(localAspect, depth, grid, minRadius, scenePower);
     fallback = point;
-    if (Math.abs(point.cy) > PICK_MIN_CY_ABS) {
-      return point;
+    if (Math.abs(point.cy) <= PICK_MIN_CY_ABS) {
+      continue;
+    }
+    if (!best || point.r < best.r) {
+      best = point;
+    }
+    if (point.r <= targetRadius) {
+      break;
     }
   }
 
+  if (best) {
+    return best;
+  }
   return fallback || { cx: -0.75, cy: 0.3, r: minRadius };
 }
 
@@ -1132,6 +1145,20 @@ function prepareSceneStateForSecondFrameColor(preIterEstimate) {
   return hasNextEscapePixels();
 }
 
+function primeSecondFrameColors() {
+  const maxPrimePasses = 8;
+  for (let i = 0; i < maxPrimePasses; i += 1) {
+    runUpdatePass();
+    off += 1;
+    if (off >= MOD) {
+      off -= MOD;
+    }
+    if (estimateColorCoverage() > 0) {
+      return;
+    }
+  }
+}
+
 function drawToScreen() {
   const src = renderTargets[currentIndex];
 
@@ -1177,6 +1204,7 @@ function renderLoop() {
       pendingScene = null;
       applyScene(scene);
       requestPick();
+      clearScreen();
     } else {
       clearScreen();
       ensureNextPickReady();
@@ -1192,7 +1220,7 @@ function renderLoop() {
   }
 
   if (sceneJustReset) {
-    drawToScreen();
+    clearScreen();
     sceneJustReset = false;
     return;
   }
