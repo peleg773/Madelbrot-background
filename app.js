@@ -6,8 +6,8 @@ const PICK_DEPTH = 20;
 const PICK_GRID = 200;
 const SAMPLE_TARGET_PIXELS = 4096;
 const MIN_RENDER_RADIUS = 1.0e-5;
-const FLOAT32_REL_EPS = 1.1920929e-7;
-const PRECISION_RADIUS_FACTOR = 0.1;
+const FLOAT32_MIN_STEP = Math.pow(2, -149);
+const PRECISION_STEP_ULPS = 1.0;
 const MAX_SCENE_FRAMES = 1800;
 const POWER_OPTIONS = [2, 2, 2, 3, 3, 4, 5];
 const MAX_POWER = 8;
@@ -15,6 +15,7 @@ const SCENE_PREP_MAX_ITERS = 20000;
 const PREITER_MAX_ITERS = 2048;
 const PREITER_MAX_COLS = 320;
 const PREITER_MAX_ROWS = 180;
+const PREITER_SAFETY_MARGIN = 24;
 
 const PICK_MIN_CY_ABS = 0.001;
 const PICK_MAX_RETRIES = 64;
@@ -35,14 +36,12 @@ let displayProgram;
 let sampleProgram;
 let coverageProgram;
 let stateOnlyProgram;
-let escapeCheckProgram;
 
 let updateUniforms;
 let displayUniforms;
 let sampleUniforms;
 let coverageUniforms;
 let stateOnlyUniforms;
-let escapeCheckUniforms;
 
 let renderTargets = [];
 let currentIndex = 0;
@@ -209,15 +208,16 @@ function createPrograms() {
     }
 
     void main() {
-      vec2 pixel = gl_FragCoord.xy - vec2(0.5);
+      vec2 pixel = gl_FragCoord.xy;
+      ivec2 texel = ivec2(pixel);
       float tx = pixel.x / uCols;
       float ty = pixel.y / uRows;
 
       float x0 = uCx + mix(-uR, uR, tx);
       float y0 = uCy + mix(uR, -uR, ty) * uAspect;
 
-      vec2 z = texture(uPrevState, vUv).rg;
-      vec4 prevColor = texture(uPrevColor, vUv);
+      vec2 z = texelFetch(uPrevState, texel, 0).rg;
+      vec4 prevColor = texelFetch(uPrevColor, texel, 0);
 
       if (prevColor.a > 0.5) {
         outState = z;
@@ -258,7 +258,7 @@ function createPrograms() {
     uniform sampler2D uColor;
 
     void main() {
-      vec3 rgb = texture(uColor, vUv).rgb;
+      vec3 rgb = texelFetch(uColor, ivec2(gl_FragCoord.xy), 0).rgb;
       outColor = vec4(rgb, 1.0);
     }
   `;
@@ -325,62 +325,17 @@ function createPrograms() {
     }
 
     void main() {
-      vec2 pixel = gl_FragCoord.xy - vec2(0.5);
+      vec2 pixel = gl_FragCoord.xy;
+      ivec2 texel = ivec2(pixel);
       float tx = pixel.x / uCols;
       float ty = pixel.y / uRows;
 
       float x0 = uCx + mix(-uR, uR, tx);
       float y0 = uCy + mix(uR, -uR, ty) * uAspect;
 
-      vec2 z = texture(uPrevState, vUv).rg;
+      vec2 z = texelFetch(uPrevState, texel, 0).rg;
       vec2 zPow = cpowInt(z, uPower);
       outState = zPow + vec2(x0, y0);
-    }
-  `;
-
-  const escapeCheckFragmentSource = `#version 300 es
-    precision highp float;
-    precision highp sampler2D;
-
-    in vec2 vUv;
-    out vec4 outColor;
-
-    uniform sampler2D uPrevState;
-    uniform float uCx;
-    uniform float uCy;
-    uniform float uR;
-    uniform float uAspect;
-    uniform float uCols;
-    uniform float uRows;
-    uniform int uPower;
-
-    vec2 cmul(vec2 a, vec2 b) {
-      return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
-    }
-
-    vec2 cpowInt(vec2 z, int p) {
-      vec2 result = vec2(1.0, 0.0);
-      for (int i = 0; i < ${MAX_POWER}; i++) {
-        if (i >= p) {
-          break;
-        }
-        result = cmul(result, z);
-      }
-      return result;
-    }
-
-    void main() {
-      vec2 pixel = gl_FragCoord.xy - vec2(0.5);
-      float tx = pixel.x / uCols;
-      float ty = pixel.y / uRows;
-
-      float x0 = uCx + mix(-uR, uR, tx);
-      float y0 = uCy + mix(uR, -uR, ty) * uAspect;
-
-      vec2 z = texture(uPrevState, vUv).rg;
-      vec2 zNew = cpowInt(z, uPower) + vec2(x0, y0);
-      float escaped = dot(zNew, zNew) >= 4.0 ? 1.0 : 0.0;
-      outColor = vec4(escaped, 0.0, 0.0, 1.0);
     }
   `;
 
@@ -389,7 +344,6 @@ function createPrograms() {
   sampleProgram = createProgram(vertexShaderSource, sampleFragmentSource);
   coverageProgram = createProgram(vertexShaderSource, coverageFragmentSource);
   stateOnlyProgram = createProgram(vertexShaderSource, stateOnlyFragmentSource);
-  escapeCheckProgram = createProgram(vertexShaderSource, escapeCheckFragmentSource);
 
   updateUniforms = {
     prevState: gl.getUniformLocation(updateProgram, "uPrevState"),
@@ -428,17 +382,6 @@ function createPrograms() {
     cols: gl.getUniformLocation(stateOnlyProgram, "uCols"),
     rows: gl.getUniformLocation(stateOnlyProgram, "uRows"),
     power: gl.getUniformLocation(stateOnlyProgram, "uPower")
-  };
-
-  escapeCheckUniforms = {
-    prevState: gl.getUniformLocation(escapeCheckProgram, "uPrevState"),
-    cx: gl.getUniformLocation(escapeCheckProgram, "uCx"),
-    cy: gl.getUniformLocation(escapeCheckProgram, "uCy"),
-    r: gl.getUniformLocation(escapeCheckProgram, "uR"),
-    aspect: gl.getUniformLocation(escapeCheckProgram, "uAspect"),
-    cols: gl.getUniformLocation(escapeCheckProgram, "uCols"),
-    rows: gl.getUniformLocation(escapeCheckProgram, "uRows"),
-    power: gl.getUniformLocation(escapeCheckProgram, "uPower")
   };
 }
 
@@ -601,10 +544,10 @@ function handleResize() {
     return;
   }
 
-  // Use DPR=1 to hold a consistent cost profile for real-time full-screen rendering.
-  const dpr = 1;
-  const nextWidth = Math.max(1, Math.floor(window.innerWidth * dpr));
-  const nextHeight = Math.max(1, Math.floor(window.innerHeight * dpr));
+  const rect = canvas.getBoundingClientRect();
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const nextWidth = Math.max(1, Math.round(rect.width * dpr));
+  const nextHeight = Math.max(1, Math.round(rect.height * dpr));
 
   if (canvas.width === nextWidth && canvas.height === nextHeight) {
     return;
@@ -748,7 +691,8 @@ function recreateSampleTarget() {
 function applyScene(scene) {
   cx = scene.cx;
   cy = scene.cy;
-  r = Math.max(scene.r, getPrecisionSafeRadius(scene.cx, scene.cy));
+  const precisionSafeRadius = getPrecisionSafeRadius(scene.cx, scene.cy);
+  r = Math.max(scene.r, precisionSafeRadius);
   power = Math.max(2, Math.min(MAX_POWER, scene.power | 0));
   logPower = Math.log(power);
 
@@ -759,17 +703,33 @@ function applyScene(scene) {
   refreshRequested = false;
   sceneJustReset = true;
 
+  let preIterEstimate = Math.max(0, scene.preIter | 0);
+  if (r > scene.r) {
+    preIterEstimate = computePreIterEstimateLocal(cx, cy, r, aspect, power);
+  }
+
   clearSimulationTextures();
-  prepareSceneStateForSecondFrameColor(Math.max(0, scene.preIter | 0));
-  primeSecondFrameColors();
+  prepareSceneStateForFirstVisibleColor(preIterEstimate);
   sceneActive = true;
 }
 
 function getPrecisionSafeRadius(centerX, centerY) {
-  const magnitude = Math.max(1.0, Math.abs(centerX), Math.abs(centerY));
-  const ulp = magnitude * FLOAT32_REL_EPS;
-  const widthDrivenFloor = PRECISION_RADIUS_FACTOR * ulp * simCols;
+  const stepUlp = Math.max(getFloat32Ulp(centerX), getFloat32Ulp(centerY));
+  const widthDrivenFloor = 0.5 * simCols * PRECISION_STEP_ULPS * stepUlp;
   return Math.max(MIN_RENDER_RADIUS, widthDrivenFloor);
+}
+
+function getFloat32Ulp(value) {
+  const rounded = Math.abs(Math.fround(value));
+  if (!Number.isFinite(rounded)) {
+    return Infinity;
+  }
+  if (rounded === 0) {
+    return FLOAT32_MIN_STEP;
+  }
+
+  const exponent = Math.floor(Math.log2(rounded));
+  return Math.max(FLOAT32_MIN_STEP, Math.pow(2, exponent - 23));
 }
 
 function pickSceneLocal(request) {
@@ -1066,40 +1026,6 @@ function estimateColorCoverage() {
   return maxSum > 0 ? sum / maxSum : 0;
 }
 
-function hasNextEscapePixels() {
-  if (!sampleTarget) {
-    return false;
-  }
-  const src = renderTargets[currentIndex];
-  gl.bindFramebuffer(gl.FRAMEBUFFER, sampleTarget.fbo);
-  gl.viewport(0, 0, sampleTarget.width, sampleTarget.height);
-  gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
-
-  gl.useProgram(escapeCheckProgram);
-  gl.bindVertexArray(vao);
-
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, src.stateTex);
-  gl.uniform1i(escapeCheckUniforms.prevState, 0);
-
-  gl.uniform1f(escapeCheckUniforms.cx, cx);
-  gl.uniform1f(escapeCheckUniforms.cy, cy);
-  gl.uniform1f(escapeCheckUniforms.r, r);
-  gl.uniform1f(escapeCheckUniforms.aspect, aspect);
-  gl.uniform1f(escapeCheckUniforms.cols, simCols);
-  gl.uniform1f(escapeCheckUniforms.rows, simRows);
-  gl.uniform1i(escapeCheckUniforms.power, power);
-
-  gl.drawArrays(gl.TRIANGLES, 0, FULLSCREEN_TRIANGLES);
-  gl.readPixels(0, 0, sampleTarget.width, sampleTarget.height, gl.RED, gl.UNSIGNED_BYTE, sampleReadBuffer);
-
-  let sum = 0;
-  for (let i = 0; i < sampleReadBuffer.length; i += 1) {
-    sum += sampleReadBuffer[i];
-  }
-  return sum > 0;
-}
-
 function sampleTextureSum(sourceTexture, sampleAlpha) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, sampleTarget.fbo);
   gl.viewport(0, 0, sampleTarget.width, sampleTarget.height);
@@ -1129,34 +1055,27 @@ function sampleTextureSum(sourceTexture, sampleAlpha) {
   return sum;
 }
 
-function prepareSceneStateForSecondFrameColor(preIterEstimate) {
-  const preloadIters = Math.min(SCENE_PREP_MAX_ITERS, Math.max(0, preIterEstimate));
+function prepareSceneStateForFirstVisibleColor(preIterEstimate) {
+  const preloadIters = Math.min(
+    SCENE_PREP_MAX_ITERS,
+    Math.max(0, preIterEstimate - PREITER_SAFETY_MARGIN)
+  );
   for (let i = 0; i < preloadIters; i += 1) {
     runStateOnlyPass();
   }
 
   for (let i = preloadIters; i < SCENE_PREP_MAX_ITERS; i += 1) {
-    if (hasNextEscapePixels()) {
-      return true;
-    }
-    runStateOnlyPass();
-  }
-
-  return hasNextEscapePixels();
-}
-
-function primeSecondFrameColors() {
-  const maxPrimePasses = 8;
-  for (let i = 0; i < maxPrimePasses; i += 1) {
     runUpdatePass();
     off += 1;
     if (off >= MOD) {
       off -= MOD;
     }
     if (estimateColorCoverage() > 0) {
-      return;
+      return true;
     }
   }
+
+  return estimateColorCoverage() > 0;
 }
 
 function drawToScreen() {
@@ -1204,7 +1123,8 @@ function renderLoop() {
       pendingScene = null;
       applyScene(scene);
       requestPick();
-      clearScreen();
+      drawToScreen();
+      sceneJustReset = false;
     } else {
       clearScreen();
       ensureNextPickReady();
@@ -1217,10 +1137,13 @@ function renderLoop() {
     pendingScene = null;
     applyScene(scene);
     requestPick();
+    drawToScreen();
+    sceneJustReset = false;
+    return;
   }
 
   if (sceneJustReset) {
-    clearScreen();
+    drawToScreen();
     sceneJustReset = false;
     return;
   }
