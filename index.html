@@ -36,9 +36,8 @@
     </button>
     <button id="hold-scene-button" class="hud-button" type="button" aria-label="Stay on current scene" aria-pressed="false" title="Stay on current scene">
       <svg class="hud-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="16.5" cy="6.5" r="3"></circle>
-        <path d="M14 9L5.5 17.5"></path>
-        <path d="M11.5 6.5l5 5"></path>
+        <line x1="11" y1="4" x2="20" y2="13" stroke-width="4.5"></line>
+        <line x1="13.5" y1="10.5" x2="4" y2="20"></line>
       </svg>
       <span class="hud-button-label">Stay</span>
     </button>
@@ -69,7 +68,16 @@
         <label for="palette-select">Palette</label>
         <button class="info-button" type="button" aria-label="About palette" data-info="Choose the overall color style.">i</button>
       </div>
-      <select id="palette-select"></select>
+      <div id="palette-dropdown" class="custom-dropdown">
+        <button id="palette-dropdown-trigger" class="custom-dropdown-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+          <span id="palette-dropdown-label"></span>
+          <svg class="custom-dropdown-arrow" viewBox="0 0 12 7" aria-hidden="true">
+            <path d="M1 1l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <ul id="palette-dropdown-list" class="custom-dropdown-list" role="listbox" aria-label="Palette"></ul>
+      </div>
+      <select id="palette-select" style="display:none"></select>
 
       <label class="toggle-row" for="start-color-random-toggle">
         <span>Random Start Color</span>
@@ -121,7 +129,16 @@
         <label for="scene-switch-mode">Scene Length Unit</label>
         <button class="info-button" type="button" aria-label="About scene length unit" data-info="Measure scene time in seconds, frames, or iterations.">i</button>
       </div>
-      <select id="scene-switch-mode">
+      <div id="scene-switch-mode-dropdown" class="custom-dropdown">
+        <button id="scene-switch-mode-trigger" class="custom-dropdown-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+          <span id="scene-switch-mode-label"></span>
+          <svg class="custom-dropdown-arrow" viewBox="0 0 12 7" aria-hidden="true">
+            <path d="M1 1l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <ul id="scene-switch-mode-list" class="custom-dropdown-list" role="listbox" aria-label="Scene Length Unit"></ul>
+      </div>
+      <select id="scene-switch-mode" style="display:none">
         <option value="seconds">Seconds</option>
         <option value="frames">Frames</option>
         <option value="iterations">Iterations</option>
@@ -178,11 +195,20 @@
         <label for="resolution-preset-select">Resolution Quality</label>
         <button class="info-button" type="button" aria-label="About resolution quality" data-info="Higher looks sharper. Lower is lighter on the GPU.">i</button>
       </div>
-      <select id="resolution-preset-select">
+      <div id="resolution-preset-dropdown" class="custom-dropdown">
+        <button id="resolution-preset-trigger" class="custom-dropdown-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+          <span id="resolution-preset-label"></span>
+          <svg class="custom-dropdown-arrow" viewBox="0 0 12 7" aria-hidden="true">
+            <path d="M1 1l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <ul id="resolution-preset-list" class="custom-dropdown-list" role="listbox" aria-label="Resolution Quality"></ul>
+      </div>
+      <select id="resolution-preset-select" style="display:none">
         <option value="1">High</option>
-        <option value="1.5">Medium</option>
-        <option value="2">Low</option>
-        <option value="3">Very Low</option>
+        <option value="2">Medium</option>
+        <option value="3">Low</option>
+        <option value="4">Very Low</option>
       </select>
 
       <label class="toggle-row" for="show-buttons-toggle">

@@ -43,7 +43,7 @@ const SCENE_SWITCH_LIMITS = {
   [SCENE_SWITCH_MODE_ITERATIONS]: { min: 300, max: 8000, step: 1, defaultValue: 1800 }
 };
 
-const RENDER_SCALE_OPTIONS = [1, 1.5, 2, 3];
+const RENDER_SCALE_OPTIONS = [1, 2, 3, 4];
 
 const PALETTE_LUT_SIZE = 2048;
 const PALETTE_OPTIONS = [
@@ -215,6 +215,24 @@ let drawerProgress = 0;
 let drawerOpen = false;
 let drawerDrag = null;
 
+let palettePreviewActive = false;
+let previewPaletteId = null;
+let prePreviewSettings = null;
+let prePreviewStartColorPhase = 0;
+
+const SCENE_SWITCH_MODE_OPTIONS = [
+  { value: "seconds", label: "Seconds" },
+  { value: "frames", label: "Frames" },
+  { value: "iterations", label: "Iterations" }
+];
+
+const RESOLUTION_PRESET_OPTIONS = [
+  { value: "1", label: "High" },
+  { value: "2", label: "Medium" },
+  { value: "3", label: "Low" },
+  { value: "4", label: "Very Low" }
+];
+
 bootstrap();
 
 function bootstrap() {
@@ -261,6 +279,9 @@ function bootstrap() {
 
   window.addEventListener("resize", () => handleResize(false), { passive: true });
   document.addEventListener("visibilitychange", handleVisibilityChange, { passive: true });
+
+  setupCanvasDoubleTapFullscreen();
+  setupKeyboardShortcuts();
 
   handleResize(true);
   if (unsupportedEl.style.display === "grid") {
@@ -327,12 +348,319 @@ function initializeMenuUi() {
     ui.paletteSelect.append(option);
   }
 
+  initCustomPaletteDropdown();
+  initOtherCustomDropdowns();
   setupMenuEvents();
   setupDrawerInteractions();
   setupPowerRangeTrackInteraction();
   setupInfoButtonInteractions();
   refreshHudVisibility();
   syncSceneControlButtons();
+}
+
+function initCustomPaletteDropdown() {
+  ui.paletteDropdown = document.getElementById("palette-dropdown");
+  ui.paletteDropdownTrigger = document.getElementById("palette-dropdown-trigger");
+  ui.paletteDropdownLabel = document.getElementById("palette-dropdown-label");
+  ui.paletteDropdownList = document.getElementById("palette-dropdown-list");
+
+  if (!ui.paletteDropdown || !ui.paletteDropdownList) {
+    return;
+  }
+
+  ui.paletteDropdownList.textContent = "";
+  for (const palette of PALETTE_OPTIONS) {
+    const li = document.createElement("li");
+    li.className = "custom-dropdown-item";
+    li.setAttribute("role", "option");
+    li.setAttribute("data-value", palette.id);
+    li.setAttribute("aria-selected", "false");
+
+    const swatch = document.createElement("span");
+    swatch.className = "custom-dropdown-swatch";
+    swatch.style.background = buildPaletteCssGradient(palette);
+    li.append(swatch);
+
+    const label = document.createTextNode(palette.name);
+    li.append(label);
+
+    li.addEventListener("click", () => {
+      setPaletteDropdownOpen(false);
+      if (runtimeSettings.paletteId !== palette.id) {
+        updateRuntimeSettings({ paletteId: palette.id });
+      }
+    });
+
+    li.addEventListener("pointerenter", () => {
+      if (!palettePreviewActive) {
+        return;
+      }
+      applyPalettePreview(palette.id);
+    });
+
+    ui.paletteDropdownList.append(li);
+  }
+
+  ui.paletteDropdownTrigger.addEventListener("click", () => {
+    const isOpen = ui.paletteDropdown.getAttribute("aria-expanded") === "true";
+    setPaletteDropdownOpen(!isOpen);
+  });
+
+  ui.paletteDropdownList.addEventListener("pointerleave", () => {
+    if (palettePreviewActive && prePreviewSettings) {
+      previewPaletteId = null;
+      revertPalettePreview();
+    }
+  });
+
+  document.addEventListener("pointerdown", (event) => {
+    if (ui.paletteDropdown.getAttribute("aria-expanded") !== "true") {
+      return;
+    }
+    if (!ui.paletteDropdown.contains(event.target)) {
+      setPaletteDropdownOpen(false);
+    }
+  });
+}
+
+function setPaletteDropdownOpen(isOpen) {
+  if (!ui.paletteDropdown) {
+    return;
+  }
+
+  ui.paletteDropdown.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  ui.paletteDropdownTrigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
+
+  if (isOpen) {
+    const isDesktop = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+    if (isDesktop) {
+      palettePreviewActive = true;
+      prePreviewSettings = { ...runtimeSettings };
+      prePreviewStartColorPhase = sceneStartColorPhase;
+      menuOverlay.classList.add("preview-blur-off");
+    }
+  } else {
+    if (palettePreviewActive && prePreviewSettings) {
+      revertPalettePreview();
+    }
+    palettePreviewActive = false;
+    prePreviewSettings = null;
+    previewPaletteId = null;
+    menuOverlay.classList.remove("preview-blur-off");
+  }
+
+  syncPaletteDropdownSelection();
+}
+
+function applyPalettePreview(paletteId) {
+  if (previewPaletteId === paletteId) {
+    return;
+  }
+  previewPaletteId = paletteId;
+
+  const defaults = extractPaletteScopedSettings(DEFAULT_RUNTIME_SETTINGS);
+  const profile = settingsStore.paletteProfiles[paletteId] || defaults;
+
+  setActivePalette(paletteId);
+  activeSettings.paletteCycleLength = profile.paletteCycleLength ?? defaults.paletteCycleLength;
+  activeSettings.colorIncrementCurve = profile.colorIncrementCurve ?? defaults.colorIncrementCurve;
+  activeSettings.smoothColors = profile.smoothColors !== undefined ? profile.smoothColors : defaults.smoothColors;
+
+  const mode = profile.startColorMode || defaults.startColorMode;
+  if (mode === "manual") {
+    sceneStartColorPhase = profile.startColorPhase ?? defaults.startColorPhase;
+  } else {
+    sceneStartColorPhase = prePreviewStartColorPhase;
+  }
+
+  updatePreviewUi(paletteId, profile);
+}
+
+function updatePreviewUi(paletteId, profile) {
+  const defaults = extractPaletteScopedSettings(DEFAULT_RUNTIME_SETTINGS);
+
+  const palette = getPaletteById(paletteId) || PALETTE_OPTIONS[0];
+  ui.startColorSlider.style.setProperty("--start-color-gradient", buildPaletteCssGradient(palette));
+
+  const cycleLen = profile.paletteCycleLength ?? defaults.paletteCycleLength;
+  ui.paletteCycleSlider.value = String(cycleLen);
+  ui.paletteCycleValue.textContent = `${cycleLen.toFixed(1)}`;
+
+  const curve = profile.colorIncrementCurve ?? defaults.colorIncrementCurve;
+  ui.colorIncrementCurveSlider.value = String(curve);
+  ui.colorIncrementCurveValue.textContent = formatColorIncrementCurveValue(curve);
+
+  const smooth = profile.smoothColors !== undefined ? profile.smoothColors : defaults.smoothColors;
+  ui.smoothColorsToggle.checked = smooth;
+
+  const mode = profile.startColorMode || defaults.startColorMode;
+  ui.startColorRandomToggle.checked = mode === "random";
+
+  const phase = profile.startColorPhase ?? defaults.startColorPhase;
+  ui.startColorSlider.value = String(phase);
+  ui.startColorValue.textContent = `${Math.round(phase * 360)}°`;
+}
+
+function revertPalettePreview() {
+  if (!prePreviewSettings) {
+    return;
+  }
+
+  setActivePalette(prePreviewSettings.paletteId);
+  activeSettings.paletteCycleLength = prePreviewSettings.paletteCycleLength;
+  activeSettings.colorIncrementCurve = prePreviewSettings.colorIncrementCurve;
+  activeSettings.smoothColors = prePreviewSettings.smoothColors;
+  sceneStartColorPhase = prePreviewStartColorPhase;
+
+  revertPreviewUi();
+}
+
+function revertPreviewUi() {
+  const s = prePreviewSettings;
+  if (!s) {
+    return;
+  }
+
+  const palette = getPaletteById(s.paletteId) || PALETTE_OPTIONS[0];
+  ui.startColorSlider.style.setProperty("--start-color-gradient", buildPaletteCssGradient(palette));
+
+  ui.paletteCycleSlider.value = String(s.paletteCycleLength);
+  ui.paletteCycleValue.textContent = `${s.paletteCycleLength.toFixed(1)}`;
+
+  ui.colorIncrementCurveSlider.value = String(s.colorIncrementCurve);
+  ui.colorIncrementCurveValue.textContent = formatColorIncrementCurveValue(s.colorIncrementCurve);
+
+  ui.smoothColorsToggle.checked = s.smoothColors;
+
+  ui.startColorRandomToggle.checked = s.startColorMode === "random";
+  ui.startColorSlider.value = String(s.startColorPhase);
+  ui.startColorValue.textContent = `${Math.round(s.startColorPhase * 360)}°`;
+}
+
+function syncPaletteDropdownSelection() {
+  if (!ui.paletteDropdownList || !ui.paletteDropdownLabel) {
+    return;
+  }
+
+  const currentId = runtimeSettings.paletteId;
+  const palette = getPaletteById(currentId);
+  ui.paletteDropdownLabel.textContent = palette ? palette.name : currentId;
+
+  const items = ui.paletteDropdownList.querySelectorAll(".custom-dropdown-item");
+  for (const item of items) {
+    item.setAttribute("aria-selected", item.getAttribute("data-value") === currentId ? "true" : "false");
+  }
+}
+
+function initSimpleCustomDropdown(dropdownId, triggerId, labelId, listId, options, onChange) {
+  const dropdown = document.getElementById(dropdownId);
+  const trigger = document.getElementById(triggerId);
+  const label = document.getElementById(labelId);
+  const list = document.getElementById(listId);
+  if (!dropdown || !list) {
+    return null;
+  }
+
+  list.textContent = "";
+  for (const opt of options) {
+    const li = document.createElement("li");
+    li.className = "custom-dropdown-item";
+    li.setAttribute("role", "option");
+    li.setAttribute("data-value", opt.value);
+    li.setAttribute("aria-selected", "false");
+    li.textContent = opt.label;
+
+    li.addEventListener("click", () => {
+      dropdown.setAttribute("aria-expanded", "false");
+      trigger.setAttribute("aria-expanded", "false");
+      onChange(opt.value);
+    });
+
+    list.append(li);
+  }
+
+  trigger.addEventListener("click", () => {
+    const isOpen = dropdown.getAttribute("aria-expanded") === "true";
+    dropdown.setAttribute("aria-expanded", isOpen ? "false" : "true");
+    trigger.setAttribute("aria-expanded", isOpen ? "false" : "true");
+  });
+
+  document.addEventListener("pointerdown", (event) => {
+    if (dropdown.getAttribute("aria-expanded") !== "true") {
+      return;
+    }
+    if (!dropdown.contains(event.target)) {
+      dropdown.setAttribute("aria-expanded", "false");
+      trigger.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  return { dropdown, trigger, label, list };
+}
+
+function syncSimpleCustomDropdown(label, list, currentValue, options) {
+  if (!label || !list) {
+    return;
+  }
+  const match = options.find((o) => String(o.value) === String(currentValue));
+  label.textContent = match ? match.label : currentValue;
+
+  const items = list.querySelectorAll(".custom-dropdown-item");
+  for (const item of items) {
+    item.setAttribute("aria-selected", item.getAttribute("data-value") === String(currentValue) ? "true" : "false");
+  }
+}
+
+function initOtherCustomDropdowns() {
+  const scMode = initSimpleCustomDropdown(
+    "scene-switch-mode-dropdown",
+    "scene-switch-mode-trigger",
+    "scene-switch-mode-label",
+    "scene-switch-mode-list",
+    SCENE_SWITCH_MODE_OPTIONS,
+    (value) => {
+      updateRuntimeSettings({
+        sceneSwitchMode: value,
+        sceneSwitchLimit: getSceneSwitchRange(value).defaultValue
+      });
+    }
+  );
+  if (scMode) {
+    ui.sceneSwitchModeDropdown = scMode;
+  }
+
+  const resPreset = initSimpleCustomDropdown(
+    "resolution-preset-dropdown",
+    "resolution-preset-trigger",
+    "resolution-preset-label",
+    "resolution-preset-list",
+    RESOLUTION_PRESET_OPTIONS,
+    (value) => {
+      updateRuntimeSettings({ renderScale: Number(value) });
+    }
+  );
+  if (resPreset) {
+    ui.resolutionPresetDropdown = resPreset;
+  }
+}
+
+function syncOtherCustomDropdowns() {
+  if (ui.sceneSwitchModeDropdown) {
+    syncSimpleCustomDropdown(
+      ui.sceneSwitchModeDropdown.label,
+      ui.sceneSwitchModeDropdown.list,
+      runtimeSettings.sceneSwitchMode,
+      SCENE_SWITCH_MODE_OPTIONS
+    );
+  }
+  if (ui.resolutionPresetDropdown) {
+    syncSimpleCustomDropdown(
+      ui.resolutionPresetDropdown.label,
+      ui.resolutionPresetDropdown.list,
+      String(runtimeSettings.renderScale),
+      RESOLUTION_PRESET_OPTIONS
+    );
+  }
 }
 
 function setupMenuEvents() {
@@ -538,15 +866,32 @@ function onDrawerDragEnd(event) {
 
 function setDrawerOpen(isOpen, animate) {
   drawerOpen = Boolean(isOpen);
+  if (!drawerOpen) {
+    setPaletteDropdownOpen(false);
+    closeAllSimpleCustomDropdowns();
+  }
   const target = drawerOpen ? 1 : 0;
   applyDrawerProgress(target, animate);
+}
+
+function closeAllSimpleCustomDropdowns() {
+  const dropdowns = document.querySelectorAll(".custom-dropdown[aria-expanded='true']");
+  for (const dd of dropdowns) {
+    dd.setAttribute("aria-expanded", "false");
+    const trigger = dd.querySelector(".custom-dropdown-trigger");
+    if (trigger) {
+      trigger.setAttribute("aria-expanded", "false");
+    }
+  }
 }
 
 function applyDrawerProgress(progress, animate) {
   drawerProgress = clampNumber(progress, 0, 1);
 
   settingsDrawer.style.transition = animate ? "transform 220ms ease" : "none";
-  menuOverlay.style.transition = animate ? "opacity 220ms ease, visibility 220ms ease" : "none";
+  menuOverlay.style.transition = animate
+    ? "opacity 220ms ease, visibility 220ms ease, backdrop-filter 300ms ease, -webkit-backdrop-filter 300ms ease, background 300ms ease"
+    : "backdrop-filter 300ms ease, -webkit-backdrop-filter 300ms ease, background 300ms ease";
 
   const translatePct = -100 + drawerProgress * 100;
   settingsDrawer.style.transform = `translateX(${translatePct}%)`;
@@ -608,9 +953,6 @@ function applyImmediateSettings(previous, next) {
   if (previous.paletteId !== next.paletteId) {
     activeSettings.paletteId = next.paletteId;
     setActivePalette(next.paletteId);
-    if (next.startColorMode === "random") {
-      sceneStartColorPhase = Math.random();
-    }
   }
 
   if (previous.paletteCycleLength !== next.paletteCycleLength) {
@@ -627,9 +969,7 @@ function applyImmediateSettings(previous, next) {
 
   if (previous.startColorMode !== next.startColorMode) {
     activeSettings.startColorMode = next.startColorMode;
-    if (next.startColorMode === "random") {
-      sceneStartColorPhase = Math.random();
-    } else {
+    if (next.startColorMode !== "random") {
       sceneStartColorPhase = next.startColorPhase;
     }
   }
@@ -700,6 +1040,7 @@ function applySettingsToUi() {
   }
 
   ui.paletteSelect.value = runtimeSettings.paletteId;
+  syncPaletteDropdownSelection();
   updateStartColorSliderGradient();
 
   ui.paletteCycleSlider.value = String(runtimeSettings.paletteCycleLength);
@@ -735,6 +1076,7 @@ function applySettingsToUi() {
 
   ui.resolutionPresetSelect.value = String(runtimeSettings.renderScale);
   ui.showButtonsToggle.checked = runtimeSettings.showButtons;
+  syncOtherCustomDropdowns();
   refreshHudVisibility();
 }
 
@@ -846,6 +1188,70 @@ function setupInfoButtonInteractions() {
       focusElementWithoutScroll(button);
     });
   }
+}
+
+function setupCanvasDoubleTapFullscreen() {
+  let lastTapTime = 0;
+  canvas.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    toggleFullscreen();
+  });
+
+  canvas.addEventListener("touchend", (event) => {
+    if (event.changedTouches.length !== 1) {
+      return;
+    }
+    const now = performance.now();
+    if (now - lastTapTime < 350) {
+      event.preventDefault();
+      toggleFullscreen();
+      lastTapTime = 0;
+    } else {
+      lastTapTime = now;
+    }
+  }, { passive: false });
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  } else {
+    const el = document.documentElement;
+    (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen || (() => {})).call(el);
+  }
+}
+
+function setupKeyboardShortcuts() {
+  document.addEventListener("keydown", (event) => {
+    if (event.target.tagName === "INPUT" || event.target.tagName === "SELECT" || event.target.tagName === "TEXTAREA") {
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      return;
+    }
+
+    switch (event.key.toLowerCase()) {
+      case " ":
+        event.preventDefault();
+        setScenePaused(!scenePaused);
+        break;
+      case "n":
+        requestSceneRefreshNow();
+        break;
+      case "h":
+        setSceneHeld(!sceneHeld);
+        break;
+      case "s":
+        saveCurrentFrame();
+        break;
+      case "m":
+        setDrawerOpen(!drawerOpen, true);
+        break;
+      case "f":
+        toggleFullscreen();
+        break;
+    }
+  });
 }
 
 function refreshHudVisibility() {

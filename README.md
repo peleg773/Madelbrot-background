@@ -33,6 +33,20 @@ Fullscreen animated Mandelbrot/Multibrot background ported from Processing.
 - Pull-to-refresh remains available (the page is not hard-locked with `overflow: hidden`).
 - Menu opening gesture is edge-only from the left side to reduce scroll conflicts.
 
+## Keyboard Shortcuts
+
+| Key | Action |
+| --- | ------ |
+| `Space` | Pause / Resume |
+| `N` | New scene |
+| `H` | Hold (stay on current scene) |
+| `S` | Save current frame as PNG |
+| `M` | Toggle settings menu |
+| `F` | Toggle fullscreen |
+| `Esc` | Close settings menu |
+
+Double-click or double-tap the canvas to toggle fullscreen.
+
 ## Controls (Slide-In Menu)
 Open by dragging from the left edge.
 
@@ -51,7 +65,7 @@ Open by dragging from the left edge.
   - Boundary search depth slider.
   - Power range slider (`2..8`), sampled uniformly from the selected integer range.
 - **Screen**
-  - Resolution quality: `High=1.0`, `Medium=1.5`, `Low=2.0`, `Very Low=3.0` render scale.
+  - Resolution quality: `High=1×1`, `Medium=2×2`, `Low=3×3`, `Very Low=4×4` pixels per complex number.
   - `Show Buttons` toggle for the floating scene HUD.
 - **Actions**
   - `Generate New Scene` button.
