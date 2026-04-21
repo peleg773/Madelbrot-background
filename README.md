@@ -36,7 +36,7 @@ Fullscreen animated Mandelbrot/Multibrot background ported from Processing.
 Open by dragging from the left edge.
 
 - **Color**
-  - Palette dropdown (cyclic palette set, default `HSV Classic`).
+  - Palette dropdown (cyclic palette set, default `HSV Classic`, includes `Wikipedia` gradient).
   - Palette cycle length slider (maps to color-cycle period; old `MOD` concept).
   - Start color control with `Random` (default) or manual palette-position slider.
 - **Timing**

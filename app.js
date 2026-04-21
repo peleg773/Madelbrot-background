@@ -10,7 +10,7 @@ const MIN_POWER = 2;
 const MAX_POWER = 8;
 
 const FLOAT32_MIN_STEP = Math.pow(2, -149);
-const PRECISION_STEP_ULPS = 1.0;
+const PRECISION_STEP_ULPS = 4.0;
 const SCENE_PREP_MAX_ITERS = 20000;
 const PREITER_MAX_ITERS = 2048;
 const PREITER_MAX_COLS = 320;
@@ -41,6 +41,20 @@ const PALETTE_OPTIONS = [
     id: "hsv-classic",
     name: "HSV Classic",
     kind: "hsv"
+  },
+  {
+    id: "wikipedia",
+    name: "Wikipedia",
+    kind: "stops",
+    // Control points from the Wikimedia/Ultra Fractal gradient definition.
+    stops: [
+      { position: 0.0, color: "#000764" },
+      { position: 0.16, color: "#206bcb" },
+      { position: 0.42, color: "#edffff" },
+      { position: 0.6425, color: "#ffaa00" },
+      { position: 0.8575, color: "#000200" },
+      { position: 1.0, color: "#000764" }
+    ]
   },
   {
     id: "red-blue-loop",
@@ -127,6 +141,9 @@ let simCols = 1;
 let simRows = 1;
 let aspect = 1;
 let appliedRenderScale = activeSettings.renderScale;
+let displayPixelSize = activeSettings.renderScale;
+let displayCropOffsetX = 0;
+let displayCropOffsetY = 0;
 
 let sceneCenterX = -0.75;
 let sceneCenterY = 0.0;
@@ -608,7 +625,12 @@ function buildPaletteCssGradient(palette) {
     return "linear-gradient(90deg,#ff0000,#ffff00,#00ff00,#00ffff,#0000ff,#ff00ff,#ff0000)";
   }
 
-  return `linear-gradient(90deg, ${palette.stops.join(", ")})`;
+  const stops = normalizePaletteStops(palette.stops);
+  const cssStops = stops.map((stop) => {
+    const [r, g, b] = stop.rgb;
+    return `rgb(${r}, ${g}, ${b}) ${(stop.position * 100).toFixed(2)}%`;
+  });
+  return `linear-gradient(90deg, ${cssStops.join(", ")})`;
 }
 
 function refreshPowerRangeFill() {
@@ -860,15 +882,25 @@ function createPrograms() {
     uniform sampler2D uPalette;
     uniform float uPaletteCycleLength;
     uniform float uStartColorPhase;
+    uniform vec2 uSimSize;
+    uniform float uPixelSize;
+    uniform vec2 uCropOffset;
+
+    ivec2 getSimulationTexel() {
+      vec2 simPos = floor((gl_FragCoord.xy - vec2(0.5) + uCropOffset) / max(uPixelSize, 1.0e-4));
+      vec2 clamped = clamp(simPos, vec2(0.0), uSimSize - vec2(1.0));
+      return ivec2(clamped);
+    }
 
     void main() {
-      vec4 mask = texture(uMask, vUv);
+      ivec2 texel = getSimulationTexel();
+      vec4 mask = texelFetch(uMask, texel, 0);
       if (mask.a <= 0.5) {
         outColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
       }
 
-      float escapedPhase = texture(uState, vUv).r;
+      float escapedPhase = texelFetch(uState, texel, 0).r;
       float paletteT = fract(uStartColorPhase + escapedPhase / uPaletteCycleLength);
 
       vec3 rgb = texture(uPalette, vec2(paletteT, 0.5)).rgb;
@@ -961,7 +993,10 @@ function createPrograms() {
     mask: gl.getUniformLocation(displayProgram, "uMask"),
     palette: gl.getUniformLocation(displayProgram, "uPalette"),
     paletteCycleLength: gl.getUniformLocation(displayProgram, "uPaletteCycleLength"),
-    startColorPhase: gl.getUniformLocation(displayProgram, "uStartColorPhase")
+    startColorPhase: gl.getUniformLocation(displayProgram, "uStartColorPhase"),
+    simSize: gl.getUniformLocation(displayProgram, "uSimSize"),
+    pixelSize: gl.getUniformLocation(displayProgram, "uPixelSize"),
+    cropOffset: gl.getUniformLocation(displayProgram, "uCropOffset")
   };
 
   coverageUniforms = {
@@ -1065,23 +1100,83 @@ function buildPaletteLut(palette, size) {
     return output;
   }
 
-  const rgbStops = palette.stops.map(parseHexRgb);
+  const stops = normalizePaletteStops(palette.stops);
+  let stopIndex = 0;
+
   for (let i = 0; i < size; i += 1) {
     const t = size <= 1 ? 0 : i / (size - 1);
-    const scaled = t * (rgbStops.length - 1);
-    const idx = Math.floor(scaled);
-    const frac = scaled - idx;
+    while (stopIndex + 1 < stops.length && t > stops[stopIndex + 1].position) {
+      stopIndex += 1;
+    }
 
-    const a = rgbStops[idx];
-    const b = rgbStops[Math.min(rgbStops.length - 1, idx + 1)];
+    const a = stops[stopIndex];
+    const b = stops[Math.min(stops.length - 1, stopIndex + 1)];
+    const span = Math.max(1.0e-6, b.position - a.position);
+    const frac = clampNumber((t - a.position) / span, 0, 1);
 
-    output[4 * i + 0] = Math.round(a[0] + (b[0] - a[0]) * frac);
-    output[4 * i + 1] = Math.round(a[1] + (b[1] - a[1]) * frac);
-    output[4 * i + 2] = Math.round(a[2] + (b[2] - a[2]) * frac);
+    output[4 * i + 0] = Math.round(a.rgb[0] + (b.rgb[0] - a.rgb[0]) * frac);
+    output[4 * i + 1] = Math.round(a.rgb[1] + (b.rgb[1] - a.rgb[1]) * frac);
+    output[4 * i + 2] = Math.round(a.rgb[2] + (b.rgb[2] - a.rgb[2]) * frac);
     output[4 * i + 3] = 255;
   }
 
   return output;
+}
+
+function normalizePaletteStops(stops) {
+  if (!Array.isArray(stops) || stops.length === 0) {
+    return [
+      { position: 0, rgb: [255, 255, 255] },
+      { position: 1, rgb: [255, 255, 255] }
+    ];
+  }
+
+  const normalized = [];
+  const denominator = Math.max(1, stops.length - 1);
+
+  for (let i = 0; i < stops.length; i += 1) {
+    const stop = stops[i];
+    let color = "#ffffff";
+    let position = i / denominator;
+
+    if (typeof stop === "string") {
+      color = stop;
+    } else if (stop && typeof stop === "object") {
+      if (typeof stop.color === "string") {
+        color = stop.color;
+      }
+      if (Number.isFinite(stop.position)) {
+        position = Number(stop.position);
+      }
+    } else {
+      continue;
+    }
+
+    normalized.push({
+      position: clampNumber(position, 0, 1),
+      rgb: parseHexRgb(color)
+    });
+  }
+
+  if (normalized.length === 0) {
+    return [
+      { position: 0, rgb: [255, 255, 255] },
+      { position: 1, rgb: [255, 255, 255] }
+    ];
+  }
+
+  normalized.sort((a, b) => a.position - b.position);
+
+  if (normalized[0].position > 0) {
+    normalized.unshift({ position: 0, rgb: [...normalized[0].rgb] });
+  }
+
+  const last = normalized[normalized.length - 1];
+  if (last.position < 1) {
+    normalized.push({ position: 1, rgb: [...last.rgb] });
+  }
+
+  return normalized;
 }
 
 function hsvToRgb(h, s, v) {
@@ -1235,32 +1330,63 @@ function handleVisibilityChange() {
   }
 }
 
-function chooseSimulationGrid(width, height, targetScale) {
-  const targetCols = Math.max(1, Math.round(width / targetScale));
-  let bestCols = targetCols;
-  let bestRows = Math.max(1, Math.round((targetCols * height) / width));
-  let bestScore = Number.POSITIVE_INFINITY;
+function greatestCommonDivisor(a, b) {
+  let x = Math.max(1, Math.floor(Math.abs(a)));
+  let y = Math.max(1, Math.floor(Math.abs(b)));
+  while (y !== 0) {
+    const t = x % y;
+    x = y;
+    y = t;
+  }
+  return x;
+}
 
-  const minCols = Math.max(1, targetCols - 24);
-  const maxCols = Math.max(minCols, targetCols + 24);
+function chooseEffectivePixelSize(width, height, requestedPixelSize) {
+  const target = Math.max(1, Number(requestedPixelSize) || 1);
+  const sharedDivisor = greatestCommonDivisor(width, height);
+  if (sharedDivisor <= 1) {
+    return 1;
+  }
 
-  for (let cols = minCols; cols <= maxCols; cols += 1) {
-    const rows = Math.max(1, Math.round((cols * height) / width));
-    const pixelWidth = width / cols;
-    const pixelHeight = height / rows;
+  let best = 1;
+  let bestError = Math.abs(1 - target);
 
-    const squareError = Math.abs(pixelWidth - pixelHeight);
-    const scaleError = Math.abs((pixelWidth + pixelHeight) * 0.5 - targetScale);
-    const score = squareError * 8 + scaleError;
+  function consider(divisor) {
+    if (divisor < 1) {
+      return;
+    }
 
-    if (score < bestScore) {
-      bestScore = score;
-      bestCols = cols;
-      bestRows = rows;
+    const error = Math.abs(divisor - target);
+    if (error < bestError || (error === bestError && divisor > best)) {
+      best = divisor;
+      bestError = error;
     }
   }
 
-  return { cols: bestCols, rows: bestRows };
+  const limit = Math.floor(Math.sqrt(sharedDivisor));
+  for (let candidate = 1; candidate <= limit; candidate += 1) {
+    if (sharedDivisor % candidate !== 0) {
+      continue;
+    }
+    consider(candidate);
+    consider(sharedDivisor / candidate);
+  }
+
+  return best;
+}
+
+function computeSimulationGrid(width, height, requestedPixelSize) {
+  const pixelSize = chooseEffectivePixelSize(width, height, requestedPixelSize);
+  const cols = Math.max(1, Math.floor(width / pixelSize));
+  const rows = Math.max(1, Math.floor(height / pixelSize));
+
+  return {
+    cols,
+    rows,
+    pixelSize,
+    cropOffsetX: 0,
+    cropOffsetY: 0
+  };
 }
 
 function handleResize(forceRecreate) {
@@ -1282,9 +1408,12 @@ function handleResize(forceRecreate) {
   canvas.height = nextHeight;
 
   appliedRenderScale = activeSettings.renderScale;
-  const simulationGrid = chooseSimulationGrid(canvas.width, canvas.height, appliedRenderScale);
+  const simulationGrid = computeSimulationGrid(canvas.width, canvas.height, appliedRenderScale);
+  displayPixelSize = simulationGrid.pixelSize;
   simCols = simulationGrid.cols;
   simRows = simulationGrid.rows;
+  displayCropOffsetX = simulationGrid.cropOffsetX;
+  displayCropOffsetY = simulationGrid.cropOffsetY;
   aspect = simRows / simCols;
 
   try {
@@ -1423,11 +1552,11 @@ function recreateSampleTarget() {
 }
 
 function applyScene(scene) {
-  sceneCenterX = scene.centerX;
-  sceneCenterY = scene.centerY;
+  sceneCenterX = Math.fround(scene.centerX);
+  sceneCenterY = Math.fround(scene.centerY);
 
-  const precisionSafeRadius = getPrecisionSafeRadius(scene.centerX, scene.centerY);
-  sceneRadius = Math.max(scene.radius, precisionSafeRadius);
+  const precisionSafeRadius = getPrecisionSafeRadius(sceneCenterX, sceneCenterY);
+  sceneRadius = Math.fround(Math.max(scene.radius, precisionSafeRadius));
   scenePower = clampNumber(scene.power | 0, MIN_POWER, MAX_POWER);
   sceneLogPower = Math.log(scenePower);
 
@@ -1456,9 +1585,32 @@ function applyScene(scene) {
 }
 
 function getPrecisionSafeRadius(centerX, centerY) {
-  const stepUlp = Math.max(getFloat32Ulp(centerX), getFloat32Ulp(centerY));
-  const widthDrivenFloor = 0.5 * simCols * PRECISION_STEP_ULPS * stepUlp;
-  return Math.max(MINIMUM_RENDER_RADIUS, widthDrivenFloor);
+  const centerXF32 = Math.fround(centerX);
+  const centerYF32 = Math.fround(centerY);
+
+  let radiusFloor = MINIMUM_RENDER_RADIUS;
+  const safeAspect = Math.max(1.0e-6, aspect);
+
+  // Iterate a few times because ulp can change slightly across the sampled span.
+  for (let i = 0; i < 3; i += 1) {
+    const ySpan = radiusFloor * safeAspect;
+
+    const xStepUlp = Math.max(
+      getFloat32Ulp(centerXF32),
+      getFloat32Ulp(Math.fround(centerXF32 - radiusFloor)),
+      getFloat32Ulp(Math.fround(centerXF32 + radiusFloor))
+    );
+    const yStepUlp = Math.max(
+      getFloat32Ulp(centerYF32),
+      getFloat32Ulp(Math.fround(centerYF32 - ySpan)),
+      getFloat32Ulp(Math.fround(centerYF32 + ySpan))
+    );
+
+    const requiredRadius = 0.5 * simCols * PRECISION_STEP_ULPS * Math.max(xStepUlp, yStepUlp);
+    radiusFloor = Math.max(radiusFloor, requiredRadius);
+  }
+
+  return radiusFloor;
 }
 
 function getFloat32Ulp(value) {
@@ -1853,6 +2005,9 @@ function drawToScreen() {
 
   gl.uniform1f(displayUniforms.paletteCycleLength, activeSettings.paletteCycleLength);
   gl.uniform1f(displayUniforms.startColorPhase, sceneStartColorPhase);
+  gl.uniform2f(displayUniforms.simSize, simCols, simRows);
+  gl.uniform1f(displayUniforms.pixelSize, displayPixelSize);
+  gl.uniform2f(displayUniforms.cropOffset, displayCropOffsetX, displayCropOffsetY);
 
   gl.drawArrays(gl.TRIANGLES, 0, FULLSCREEN_TRIANGLES);
 }
