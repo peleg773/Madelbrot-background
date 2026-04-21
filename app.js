@@ -2184,49 +2184,8 @@ function handleVisibilityChange() {
   }
 }
 
-function greatestCommonDivisor(a, b) {
-  let x = Math.max(1, Math.floor(Math.abs(a)));
-  let y = Math.max(1, Math.floor(Math.abs(b)));
-  while (y !== 0) {
-    const t = x % y;
-    x = y;
-    y = t;
-  }
-  return x;
-}
-
 function chooseEffectivePixelSize(width, height, requestedPixelSize) {
-  const target = Math.max(1, Number(requestedPixelSize) || 1);
-  const sharedDivisor = greatestCommonDivisor(width, height);
-  if (sharedDivisor <= 1) {
-    return 1;
-  }
-
-  let best = 1;
-  let bestError = Math.abs(1 - target);
-
-  function consider(divisor) {
-    if (divisor < 1) {
-      return;
-    }
-
-    const error = Math.abs(divisor - target);
-    if (error < bestError || (error === bestError && divisor > best)) {
-      best = divisor;
-      bestError = error;
-    }
-  }
-
-  const limit = Math.floor(Math.sqrt(sharedDivisor));
-  for (let candidate = 1; candidate <= limit; candidate += 1) {
-    if (sharedDivisor % candidate !== 0) {
-      continue;
-    }
-    consider(candidate);
-    consider(sharedDivisor / candidate);
-  }
-
-  return best;
+  return Math.max(1, Math.round(Number(requestedPixelSize) || 1));
 }
 
 function computeSimulationGrid(width, height, requestedPixelSize) {
