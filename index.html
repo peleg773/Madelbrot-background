@@ -8,6 +8,100 @@
 </head>
 <body>
   <canvas id="fractal" aria-label="Animated Mandelbrot background"></canvas>
+  <div id="menu-edge-zone" aria-hidden="true"></div>
+  <div id="menu-overlay" hidden></div>
+
+  <aside id="settings-drawer" aria-label="Fractal settings" aria-hidden="true">
+    <header class="drawer-header">
+      <h1>Mandelbrot Controls</h1>
+      <button id="menu-close-button" type="button" aria-label="Close settings">Close</button>
+    </header>
+
+    <div id="drawer-drag-handle" aria-hidden="true"></div>
+
+    <section class="control-section">
+      <h2>Color</h2>
+      <label for="palette-select">Palette</label>
+      <select id="palette-select"></select>
+
+      <label for="palette-cycle-slider">
+        Palette Cycle Length
+        <span id="palette-cycle-value" class="value-label"></span>
+      </label>
+      <input id="palette-cycle-slider" type="range" min="20" max="5000" step="0.1">
+
+      <label class="toggle-row" for="start-color-random-toggle">
+        <span>Random Start Color</span>
+        <input id="start-color-random-toggle" type="checkbox" checked>
+      </label>
+
+      <label for="start-color-slider">
+        Start Color
+        <span id="start-color-value" class="value-label"></span>
+      </label>
+      <input id="start-color-slider" type="range" min="0" max="1" step="0.001">
+    </section>
+
+    <section class="control-section">
+      <h2>Timing</h2>
+      <label for="scene-switch-mode">Scene Length Unit</label>
+      <select id="scene-switch-mode">
+        <option value="seconds">Seconds</option>
+        <option value="frames">Frames</option>
+        <option value="iterations">Iterations</option>
+      </select>
+
+      <label for="scene-switch-limit-slider">
+        Scene Length
+        <span id="scene-switch-limit-value" class="value-label"></span>
+      </label>
+      <input id="scene-switch-limit-slider" type="range">
+
+      <label for="iteration-rate-slider">
+        Iterations Per Second
+        <span id="iteration-rate-value" class="value-label"></span>
+      </label>
+      <input id="iteration-rate-slider" type="range" min="1" max="360" step="1">
+    </section>
+
+    <section class="control-section">
+      <h2>Scene Picker</h2>
+      <label for="boundary-search-depth-slider">
+        Boundary Search Depth
+        <span id="boundary-search-depth-value" class="value-label"></span>
+      </label>
+      <input id="boundary-search-depth-slider" type="range" min="4" max="36" step="1">
+
+      <label>
+        Power Range
+        <span id="power-range-value" class="value-label"></span>
+      </label>
+      <div class="dual-range" id="power-range-control">
+        <div class="dual-range-track"></div>
+        <div class="dual-range-fill" id="power-range-fill"></div>
+        <input id="power-min-slider" type="range" min="2" max="8" step="1">
+        <input id="power-max-slider" type="range" min="2" max="8" step="1">
+      </div>
+    </section>
+
+    <section class="control-section">
+      <h2>Quality</h2>
+      <label for="resolution-preset-select">Resolution Preset</label>
+      <select id="resolution-preset-select">
+        <option value="1">High</option>
+        <option value="1.5">Medium</option>
+        <option value="2">Low</option>
+        <option value="3">Very Low</option>
+      </select>
+    </section>
+
+    <section class="control-section actions">
+      <h2>Actions</h2>
+      <button id="new-scene-button" type="button">Generate New Scene</button>
+      <button id="reset-settings-button" type="button">Reset Settings</button>
+    </section>
+  </aside>
+
   <div id="unsupported" role="alert" aria-live="polite"></div>
   <script defer src="./app.js"></script>
 </body>

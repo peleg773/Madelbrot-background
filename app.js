@@ -1,30 +1,106 @@
-const SCALE = 1;
-const MOD = 300;
-const COLOR_COVERAGE_TARGET = 0.975;
-const SAMPLE_EVERY_N_FRAMES = 6;
-const PICK_DEPTH = 20;
-const PICK_GRID = 200;
 const SAMPLE_TARGET_PIXELS = 4096;
-const MIN_RENDER_RADIUS = 1.0e-5;
+
+const PICK_GRID_SIZE = 200;
+const MINIMUM_RENDER_RADIUS = 1.0e-5;
+const PICK_MIN_CY_ABS = 0.001;
+const PICK_MAX_RETRIES = 24;
+const PICK_TARGET_RADIUS_FACTOR = 2.0;
+
+const MIN_POWER = 2;
+const MAX_POWER = 8;
+
 const FLOAT32_MIN_STEP = Math.pow(2, -149);
 const PRECISION_STEP_ULPS = 1.0;
-const MAX_SCENE_FRAMES = 1800;
-const POWER_OPTIONS = [2, 2, 2, 3, 3, 4, 5];
-const MAX_POWER = 8;
 const SCENE_PREP_MAX_ITERS = 20000;
 const PREITER_MAX_ITERS = 2048;
 const PREITER_MAX_COLS = 320;
 const PREITER_MAX_ROWS = 180;
 const PREITER_SAFETY_MARGIN = 24;
 
-const PICK_MIN_CY_ABS = 0.001;
-const PICK_MAX_RETRIES = 64;
-const PICK_TARGET_RADIUS_FACTOR = 2.0;
-
+const MAX_UPDATE_PASSES_PER_FRAME = 24;
 const FULLSCREEN_TRIANGLES = 3;
+
+const SETTINGS_STORAGE_KEY = "mandelbrotBackground.settings.v1";
+const SETTINGS_SCHEMA_VERSION = 1;
+
+const SCENE_SWITCH_MODE_SECONDS = "seconds";
+const SCENE_SWITCH_MODE_FRAMES = "frames";
+const SCENE_SWITCH_MODE_ITERATIONS = "iterations";
+
+const SCENE_SWITCH_LIMITS = {
+  [SCENE_SWITCH_MODE_SECONDS]: { min: 6, max: 120, step: 0.5, defaultValue: 36 },
+  [SCENE_SWITCH_MODE_FRAMES]: { min: 300, max: 8000, step: 1, defaultValue: 1800 },
+  [SCENE_SWITCH_MODE_ITERATIONS]: { min: 300, max: 8000, step: 1, defaultValue: 1800 }
+};
+
+const RENDER_SCALE_OPTIONS = [1, 1.5, 2, 3];
+
+const PALETTE_LUT_SIZE = 512;
+const PALETTE_OPTIONS = [
+  {
+    id: "hsv-classic",
+    name: "HSV Classic",
+    kind: "hsv"
+  },
+  {
+    id: "red-blue-loop",
+    name: "Red-Blue Loop",
+    kind: "stops",
+    stops: ["#2a0011", "#8f1d2c", "#ff4655", "#478bff", "#1f2f8f", "#2a0011"]
+  },
+  {
+    id: "ocean-loop",
+    name: "Ocean Loop",
+    kind: "stops",
+    stops: ["#0a1d42", "#0b4f87", "#00a6a6", "#4ae3d2", "#0a1d42"]
+  },
+  {
+    id: "sunset-loop",
+    name: "Sunset Loop",
+    kind: "stops",
+    stops: ["#38004b", "#8a1f7a", "#f15b4a", "#ffb34d", "#38004b"]
+  },
+  {
+    id: "neon-loop",
+    name: "Neon Loop",
+    kind: "stops",
+    stops: ["#14002b", "#2d45ff", "#00c8ff", "#4eff9e", "#14002b"]
+  },
+  {
+    id: "violet-loop",
+    name: "Violet Loop",
+    kind: "stops",
+    stops: ["#12003d", "#4f2fb3", "#8b5cf6", "#f58cff", "#12003d"]
+  }
+];
+
+const DEFAULT_RUNTIME_SETTINGS = Object.freeze({
+  renderScale: 1,
+  paletteId: "hsv-classic",
+  paletteCycleLength: 200,
+  startColorMode: "random",
+  startColorPhase: 0,
+  sceneSwitchMode: SCENE_SWITCH_MODE_FRAMES,
+  sceneSwitchLimit: 1800,
+  iterationRate: 60,
+  boundarySearchDepth: 20,
+  powerMin: 2,
+  powerMax: 5
+});
+
+let runtimeSettings = loadRuntimeSettings();
+let activeSettings = { ...runtimeSettings };
+let pickerSettingsPending = false;
 
 let canvas;
 let unsupportedEl;
+let menuEdgeZone;
+let menuOverlay;
+let settingsDrawer;
+let drawerDragHandle;
+
+const ui = {};
+
 let gl;
 let extColorBufferFloat;
 let stateInternalFormat;
@@ -33,13 +109,11 @@ let stateType;
 let vao;
 let updateProgram;
 let displayProgram;
-let sampleProgram;
 let coverageProgram;
 let stateOnlyProgram;
 
 let updateUniforms;
 let displayUniforms;
-let sampleUniforms;
 let coverageUniforms;
 let stateOnlyUniforms;
 
@@ -52,17 +126,22 @@ let sampleReadBuffer = new Uint8Array(0);
 let simCols = 1;
 let simRows = 1;
 let aspect = 1;
+let appliedRenderScale = activeSettings.renderScale;
 
-let cx = -0.75;
-let cy = 0.0;
-let r = 1.25;
-let power = 2;
-let logPower = Math.log(2.0);
+let sceneCenterX = -0.75;
+let sceneCenterY = 0.0;
+let sceneRadius = 1.25;
+let scenePower = 2;
+let sceneLogPower = Math.log(2.0);
 
-let dir = 0;
-let off = 0;
-let counter = 0;
-let frameCounter = 0;
+let sceneIterationPhase = 1;
+let sceneStartColorPhase = Math.random();
+
+let sceneElapsedFrames = 0;
+let sceneElapsedIterations = 0;
+let sceneElapsedSeconds = 0;
+let iterationAccumulator = 0;
+let lastFrameTimeMs = 0;
 let sceneJustReset = false;
 
 let sceneActive = false;
@@ -71,18 +150,27 @@ let pendingScene = null;
 
 let pickerWorker = null;
 let pickerBusy = false;
-let desiredPickId = 0;
-let inFlightPickId = 0;
+let desiredPickRequestId = 0;
+let inFlightPickRequestId = 0;
+
+const paletteTexturesById = new Map();
+let activePaletteTexture = null;
+
+let drawerProgress = 0;
+let drawerOpen = false;
+let drawerDrag = null;
 
 bootstrap();
 
 function bootstrap() {
-  canvas = document.getElementById("fractal");
-  unsupportedEl = document.getElementById("unsupported");
-
+  cacheDomElements();
   if (!canvas || !unsupportedEl) {
     return;
   }
+
+  initializeMenuUi();
+  applySettingsToUi();
+  applyDrawerProgress(0, false);
 
   gl = canvas.getContext("webgl2", {
     alpha: false,
@@ -112,23 +200,542 @@ function bootstrap() {
   setupGLState();
   createPrograms();
   createFullscreenVAO();
+  createPaletteTextures();
+  setActivePalette(activeSettings.paletteId);
   setupPickerWorker();
 
-  window.addEventListener("resize", handleResize, { passive: true });
+  window.addEventListener("resize", () => handleResize(false), { passive: true });
+  document.addEventListener("visibilitychange", handleVisibilityChange, { passive: true });
 
-  handleResize();
+  handleResize(true);
   if (unsupportedEl.style.display === "grid") {
     return;
   }
-  renderLoop();
+
+  requestAnimationFrame(renderLoop);
 }
 
-function showUnsupported(message) {
-  unsupportedEl.textContent = message;
-  unsupportedEl.style.display = "grid";
-  if (canvas) {
-    canvas.style.display = "none";
+function cacheDomElements() {
+  canvas = document.getElementById("fractal");
+  unsupportedEl = document.getElementById("unsupported");
+
+  menuEdgeZone = document.getElementById("menu-edge-zone");
+  menuOverlay = document.getElementById("menu-overlay");
+  settingsDrawer = document.getElementById("settings-drawer");
+  drawerDragHandle = document.getElementById("drawer-drag-handle");
+
+  ui.closeButton = document.getElementById("menu-close-button");
+  ui.paletteSelect = document.getElementById("palette-select");
+  ui.paletteCycleSlider = document.getElementById("palette-cycle-slider");
+  ui.paletteCycleValue = document.getElementById("palette-cycle-value");
+  ui.startColorRandomToggle = document.getElementById("start-color-random-toggle");
+  ui.startColorSlider = document.getElementById("start-color-slider");
+  ui.startColorValue = document.getElementById("start-color-value");
+  ui.sceneSwitchMode = document.getElementById("scene-switch-mode");
+  ui.sceneSwitchLimitSlider = document.getElementById("scene-switch-limit-slider");
+  ui.sceneSwitchLimitValue = document.getElementById("scene-switch-limit-value");
+  ui.iterationRateSlider = document.getElementById("iteration-rate-slider");
+  ui.iterationRateValue = document.getElementById("iteration-rate-value");
+  ui.boundarySearchDepthSlider = document.getElementById("boundary-search-depth-slider");
+  ui.boundarySearchDepthValue = document.getElementById("boundary-search-depth-value");
+  ui.powerMinSlider = document.getElementById("power-min-slider");
+  ui.powerMaxSlider = document.getElementById("power-max-slider");
+  ui.powerRangeValue = document.getElementById("power-range-value");
+  ui.powerRangeFill = document.getElementById("power-range-fill");
+  ui.resolutionPresetSelect = document.getElementById("resolution-preset-select");
+  ui.newSceneButton = document.getElementById("new-scene-button");
+  ui.resetSettingsButton = document.getElementById("reset-settings-button");
+}
+
+function initializeMenuUi() {
+  if (!ui.paletteSelect) {
+    return;
   }
+
+  ui.paletteSelect.textContent = "";
+  for (const palette of PALETTE_OPTIONS) {
+    const option = document.createElement("option");
+    option.value = palette.id;
+    option.textContent = palette.name;
+    ui.paletteSelect.append(option);
+  }
+
+  setupMenuEvents();
+  setupDrawerInteractions();
+}
+
+function setupMenuEvents() {
+  ui.closeButton.addEventListener("click", () => setDrawerOpen(false, true));
+
+  ui.paletteSelect.addEventListener("change", () => {
+    updateRuntimeSettings({ paletteId: ui.paletteSelect.value });
+  });
+
+  ui.paletteCycleSlider.addEventListener("input", () => {
+    updateRuntimeSettings({ paletteCycleLength: Number(ui.paletteCycleSlider.value) });
+  });
+
+  ui.startColorRandomToggle.addEventListener("change", () => {
+    updateRuntimeSettings({ startColorMode: ui.startColorRandomToggle.checked ? "random" : "manual" });
+  });
+
+  ui.startColorSlider.addEventListener("input", () => {
+    updateRuntimeSettings({ startColorPhase: Number(ui.startColorSlider.value) });
+  });
+
+  ui.sceneSwitchMode.addEventListener("change", () => {
+    updateRuntimeSettings({
+      sceneSwitchMode: ui.sceneSwitchMode.value,
+      sceneSwitchLimit: getSceneSwitchRange(ui.sceneSwitchMode.value).defaultValue
+    });
+  });
+
+  ui.sceneSwitchLimitSlider.addEventListener("input", () => {
+    updateRuntimeSettings({ sceneSwitchLimit: Number(ui.sceneSwitchLimitSlider.value) });
+  });
+
+  ui.iterationRateSlider.addEventListener("input", () => {
+    updateRuntimeSettings({ iterationRate: Number(ui.iterationRateSlider.value) });
+  });
+
+  ui.boundarySearchDepthSlider.addEventListener("input", () => {
+    updateRuntimeSettings({ boundarySearchDepth: Number(ui.boundarySearchDepthSlider.value) });
+  });
+
+  ui.powerMinSlider.addEventListener("input", () => {
+    const nextMin = Number(ui.powerMinSlider.value);
+    const nextMax = Math.max(nextMin, Number(ui.powerMaxSlider.value));
+    updateRuntimeSettings({ powerMin: nextMin, powerMax: nextMax });
+  });
+
+  ui.powerMaxSlider.addEventListener("input", () => {
+    const nextMax = Number(ui.powerMaxSlider.value);
+    const nextMin = Math.min(nextMax, Number(ui.powerMinSlider.value));
+    updateRuntimeSettings({ powerMin: nextMin, powerMax: nextMax });
+  });
+
+  ui.resolutionPresetSelect.addEventListener("change", () => {
+    updateRuntimeSettings({ renderScale: Number(ui.resolutionPresetSelect.value) });
+  });
+
+  ui.newSceneButton.addEventListener("click", () => {
+    requestSceneRefreshNow();
+  });
+
+  ui.resetSettingsButton.addEventListener("click", () => {
+    updateRuntimeSettings({ ...DEFAULT_RUNTIME_SETTINGS });
+  });
+}
+
+function setupDrawerInteractions() {
+  menuOverlay.addEventListener("click", () => setDrawerOpen(false, true));
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && drawerOpen) {
+      setDrawerOpen(false, true);
+    }
+  });
+
+  menuEdgeZone.addEventListener("pointerdown", (event) => {
+    if (drawerOpen) {
+      return;
+    }
+    beginDrawerDrag(event, "open");
+  });
+
+  drawerDragHandle.addEventListener("pointerdown", (event) => {
+    if (!drawerOpen) {
+      return;
+    }
+    beginDrawerDrag(event, "close");
+  });
+
+  window.addEventListener("pointermove", onDrawerDragMove, { passive: false });
+  window.addEventListener("pointerup", onDrawerDragEnd, { passive: true });
+  window.addEventListener("pointercancel", onDrawerDragEnd, { passive: true });
+}
+
+function beginDrawerDrag(event, mode) {
+  if (event.button !== undefined && event.button !== 0) {
+    return;
+  }
+
+  const source = event.currentTarget;
+  if (source && source.setPointerCapture) {
+    try {
+      source.setPointerCapture(event.pointerId);
+    } catch (_) {
+      // Ignore capture failures.
+    }
+  }
+
+  drawerDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    mode,
+    axisLocked: null
+  };
+
+  applyDrawerProgress(drawerProgress, false);
+}
+
+function onDrawerDragMove(event) {
+  if (!drawerDrag || event.pointerId !== drawerDrag.pointerId) {
+    return;
+  }
+
+  const dx = event.clientX - drawerDrag.startX;
+  const dy = event.clientY - drawerDrag.startY;
+
+  if (drawerDrag.axisLocked === null) {
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
+    if (absX < 8 && absY < 8) {
+      return;
+    }
+
+    if (absX >= absY * 1.2) {
+      drawerDrag.axisLocked = "x";
+    } else {
+      drawerDrag.axisLocked = "y";
+      drawerDrag = null;
+      return;
+    }
+  }
+
+  if (drawerDrag.axisLocked !== "x") {
+    return;
+  }
+
+  event.preventDefault();
+
+  const drawerWidth = settingsDrawer.getBoundingClientRect().width || 1;
+  let progress;
+
+  if (drawerDrag.mode === "open") {
+    progress = clampNumber(dx / drawerWidth, 0, 1);
+  } else {
+    progress = clampNumber(1 + dx / drawerWidth, 0, 1);
+  }
+
+  applyDrawerProgress(progress, false);
+}
+
+function onDrawerDragEnd(event) {
+  if (!drawerDrag || event.pointerId !== drawerDrag.pointerId) {
+    return;
+  }
+
+  const shouldOpen = drawerProgress >= 0.35;
+  drawerDrag = null;
+  setDrawerOpen(shouldOpen, true);
+}
+
+function setDrawerOpen(isOpen, animate) {
+  drawerOpen = Boolean(isOpen);
+  const target = drawerOpen ? 1 : 0;
+  applyDrawerProgress(target, animate);
+}
+
+function applyDrawerProgress(progress, animate) {
+  drawerProgress = clampNumber(progress, 0, 1);
+
+  settingsDrawer.style.transition = animate ? "transform 220ms ease" : "none";
+  menuOverlay.style.transition = animate ? "opacity 220ms ease" : "none";
+
+  const translatePct = -100 + drawerProgress * 100;
+  settingsDrawer.style.transform = `translateX(${translatePct}%)`;
+
+  if (drawerProgress <= 0.001) {
+    menuOverlay.hidden = true;
+    menuOverlay.style.opacity = "0";
+    menuOverlay.style.pointerEvents = "none";
+    settingsDrawer.setAttribute("aria-hidden", "true");
+  } else {
+    menuOverlay.hidden = false;
+    menuOverlay.style.opacity = "0";
+    menuOverlay.style.pointerEvents = "auto";
+    settingsDrawer.setAttribute("aria-hidden", "false");
+  }
+}
+
+function updateRuntimeSettings(partial) {
+  const previous = runtimeSettings;
+  const merged = normalizeRuntimeSettings({ ...runtimeSettings, ...partial });
+
+  runtimeSettings = merged;
+  persistRuntimeSettings(runtimeSettings);
+  applySettingsToUi();
+  applyImmediateSettings(previous, runtimeSettings);
+  pickerSettingsPending = !arePickerSettingsEqual(runtimeSettings, activeSettings);
+}
+
+function arePickerSettingsEqual(a, b) {
+  return (
+    a.boundarySearchDepth === b.boundarySearchDepth &&
+    a.powerMin === b.powerMin &&
+    a.powerMax === b.powerMax
+  );
+}
+
+function applyImmediateSettings(previous, next) {
+  if (previous.paletteId !== next.paletteId) {
+    activeSettings.paletteId = next.paletteId;
+    setActivePalette(next.paletteId);
+  }
+
+  if (previous.paletteCycleLength !== next.paletteCycleLength) {
+    activeSettings.paletteCycleLength = next.paletteCycleLength;
+  }
+
+  if (previous.startColorMode !== next.startColorMode) {
+    activeSettings.startColorMode = next.startColorMode;
+    if (next.startColorMode === "random") {
+      sceneStartColorPhase = Math.random();
+    } else {
+      sceneStartColorPhase = next.startColorPhase;
+    }
+  }
+
+  if (previous.startColorPhase !== next.startColorPhase) {
+    activeSettings.startColorPhase = next.startColorPhase;
+    if (next.startColorMode === "manual") {
+      sceneStartColorPhase = next.startColorPhase;
+    }
+  }
+
+  if (previous.sceneSwitchMode !== next.sceneSwitchMode) {
+    activeSettings.sceneSwitchMode = next.sceneSwitchMode;
+  }
+
+  if (previous.sceneSwitchLimit !== next.sceneSwitchLimit) {
+    activeSettings.sceneSwitchLimit = next.sceneSwitchLimit;
+  }
+
+  if (
+    sceneActive &&
+    (
+      previous.sceneSwitchMode !== next.sceneSwitchMode ||
+      previous.sceneSwitchLimit !== next.sceneSwitchLimit
+    )
+  ) {
+    refreshRequested = hasReachedSceneLengthLimit();
+  }
+
+  if (previous.iterationRate !== next.iterationRate) {
+    activeSettings.iterationRate = next.iterationRate;
+  }
+
+  if (previous.renderScale !== next.renderScale) {
+    activeSettings.renderScale = next.renderScale;
+    handleResize(true);
+    requestSceneRefreshNow();
+  }
+}
+
+function activatePendingPickerSettingsIfNeeded() {
+  if (!pickerSettingsPending) {
+    return false;
+  }
+
+  activeSettings.boundarySearchDepth = runtimeSettings.boundarySearchDepth;
+  activeSettings.powerMin = runtimeSettings.powerMin;
+  activeSettings.powerMax = runtimeSettings.powerMax;
+  pickerSettingsPending = false;
+
+  pendingScene = null;
+  requestPick();
+  return true;
+}
+
+function applySettingsToUi() {
+  if (!ui.paletteSelect) {
+    return;
+  }
+
+  ui.paletteSelect.value = runtimeSettings.paletteId;
+  updateStartColorSliderGradient();
+
+  ui.paletteCycleSlider.value = String(runtimeSettings.paletteCycleLength);
+  ui.paletteCycleValue.textContent = `${runtimeSettings.paletteCycleLength.toFixed(1)}`;
+
+  ui.startColorRandomToggle.checked = runtimeSettings.startColorMode === "random";
+  ui.startColorSlider.value = String(runtimeSettings.startColorPhase);
+  ui.startColorValue.textContent = `${Math.round(runtimeSettings.startColorPhase * 360)}°`;
+
+  ui.sceneSwitchMode.value = runtimeSettings.sceneSwitchMode;
+  refreshSceneSwitchSliderBounds();
+  ui.sceneSwitchLimitSlider.value = String(runtimeSettings.sceneSwitchLimit);
+  ui.sceneSwitchLimitValue.textContent = formatSceneLengthValue(
+    runtimeSettings.sceneSwitchMode,
+    runtimeSettings.sceneSwitchLimit
+  );
+
+  ui.iterationRateSlider.value = String(runtimeSettings.iterationRate);
+  ui.iterationRateValue.textContent = `${runtimeSettings.iterationRate.toFixed(0)} / sec`;
+
+  ui.boundarySearchDepthSlider.value = String(runtimeSettings.boundarySearchDepth);
+  ui.boundarySearchDepthValue.textContent = String(runtimeSettings.boundarySearchDepth);
+
+  ui.powerMinSlider.value = String(runtimeSettings.powerMin);
+  ui.powerMaxSlider.value = String(runtimeSettings.powerMax);
+  ui.powerRangeValue.textContent = `${runtimeSettings.powerMin} to ${runtimeSettings.powerMax}`;
+  refreshPowerRangeFill();
+
+  ui.resolutionPresetSelect.value = String(runtimeSettings.renderScale);
+}
+
+function updateStartColorSliderGradient() {
+  if (!ui.startColorSlider) {
+    return;
+  }
+
+  const palette = getPaletteById(runtimeSettings.paletteId) || PALETTE_OPTIONS[0];
+  ui.startColorSlider.style.setProperty("--start-color-gradient", buildPaletteCssGradient(palette));
+}
+
+function getPaletteById(paletteId) {
+  return PALETTE_OPTIONS.find((palette) => palette.id === paletteId) || null;
+}
+
+function buildPaletteCssGradient(palette) {
+  if (!palette) {
+    return "linear-gradient(90deg, #ff0000, #00ffff, #ff0000)";
+  }
+
+  if (palette.kind === "hsv") {
+    return "linear-gradient(90deg,#ff0000,#ffff00,#00ff00,#00ffff,#0000ff,#ff00ff,#ff0000)";
+  }
+
+  return `linear-gradient(90deg, ${palette.stops.join(", ")})`;
+}
+
+function refreshPowerRangeFill() {
+  if (!ui.powerRangeFill) {
+    return;
+  }
+  const minPct = ((runtimeSettings.powerMin - MIN_POWER) / (MAX_POWER - MIN_POWER)) * 100;
+  const maxPct = ((runtimeSettings.powerMax - MIN_POWER) / (MAX_POWER - MIN_POWER)) * 100;
+  ui.powerRangeFill.style.left = `${minPct}%`;
+  ui.powerRangeFill.style.width = `${Math.max(0, maxPct - minPct)}%`;
+}
+
+function refreshSceneSwitchSliderBounds() {
+  const range = getSceneSwitchRange(runtimeSettings.sceneSwitchMode);
+  ui.sceneSwitchLimitSlider.min = String(range.min);
+  ui.sceneSwitchLimitSlider.max = String(range.max);
+  ui.sceneSwitchLimitSlider.step = String(range.step);
+}
+
+function getSceneSwitchRange(mode) {
+  return SCENE_SWITCH_LIMITS[mode] || SCENE_SWITCH_LIMITS[SCENE_SWITCH_MODE_FRAMES];
+}
+
+function formatSceneLengthValue(mode, value) {
+  if (mode === SCENE_SWITCH_MODE_SECONDS) {
+    return `${value.toFixed(1)} s`;
+  }
+  if (mode === SCENE_SWITCH_MODE_ITERATIONS) {
+    return `${Math.round(value)} iters`;
+  }
+  return `${Math.round(value)} frames`;
+}
+
+function loadRuntimeSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) {
+      return normalizeRuntimeSettings(DEFAULT_RUNTIME_SETTINGS);
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.version !== SETTINGS_SCHEMA_VERSION || typeof parsed.settings !== "object") {
+      return normalizeRuntimeSettings(DEFAULT_RUNTIME_SETTINGS);
+    }
+
+    return normalizeRuntimeSettings(parsed.settings);
+  } catch (_) {
+    return normalizeRuntimeSettings(DEFAULT_RUNTIME_SETTINGS);
+  }
+}
+
+function persistRuntimeSettings(settings) {
+  try {
+    const payload = {
+      version: SETTINGS_SCHEMA_VERSION,
+      settings
+    };
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(payload));
+  } catch (_) {
+    // Ignore storage failures.
+  }
+}
+
+function normalizeRuntimeSettings(input) {
+  const next = { ...DEFAULT_RUNTIME_SETTINGS, ...(input || {}) };
+
+  next.renderScale = normalizeRenderScale(next.renderScale);
+
+  const paletteIds = new Set(PALETTE_OPTIONS.map((palette) => palette.id));
+  next.paletteId = paletteIds.has(next.paletteId) ? next.paletteId : DEFAULT_RUNTIME_SETTINGS.paletteId;
+
+  next.paletteCycleLength = clampNumber(Number(next.paletteCycleLength), 20, 5000);
+
+  next.startColorMode = next.startColorMode === "manual" ? "manual" : "random";
+  next.startColorPhase = clampNumber(Number(next.startColorPhase), 0, 1);
+
+  const mode = typeof next.sceneSwitchMode === "string" ? next.sceneSwitchMode : DEFAULT_RUNTIME_SETTINGS.sceneSwitchMode;
+  next.sceneSwitchMode = SCENE_SWITCH_LIMITS[mode] ? mode : DEFAULT_RUNTIME_SETTINGS.sceneSwitchMode;
+
+  const limitRange = getSceneSwitchRange(next.sceneSwitchMode);
+  next.sceneSwitchLimit = clampNumber(Number(next.sceneSwitchLimit), limitRange.min, limitRange.max);
+  if (next.sceneSwitchMode === SCENE_SWITCH_MODE_SECONDS) {
+    next.sceneSwitchLimit = Math.round(next.sceneSwitchLimit * 10) / 10;
+  } else {
+    next.sceneSwitchLimit = Math.round(next.sceneSwitchLimit);
+  }
+
+  next.iterationRate = clampNumber(Math.round(Number(next.iterationRate) || 0), 1, 360);
+
+  next.boundarySearchDepth = clampNumber(Math.round(Number(next.boundarySearchDepth) || 0), 4, 36);
+
+  let powerMin = clampNumber(Math.round(Number(next.powerMin) || MIN_POWER), MIN_POWER, MAX_POWER);
+  let powerMax = clampNumber(Math.round(Number(next.powerMax) || MAX_POWER), MIN_POWER, MAX_POWER);
+  if (powerMin > powerMax) {
+    const temp = powerMin;
+    powerMin = powerMax;
+    powerMax = temp;
+  }
+  next.powerMin = powerMin;
+  next.powerMax = powerMax;
+
+  return next;
+}
+
+function normalizeRenderScale(scale) {
+  const numeric = Number(scale);
+  if (!Number.isFinite(numeric)) {
+    return DEFAULT_RUNTIME_SETTINGS.renderScale;
+  }
+
+  let best = RENDER_SCALE_OPTIONS[0];
+  let bestDist = Math.abs(numeric - best);
+  for (const option of RENDER_SCALE_OPTIONS) {
+    const dist = Math.abs(numeric - option);
+    if (dist < bestDist) {
+      best = option;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+function clampNumber(value, min, max) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, value));
 }
 
 function setupGLState() {
@@ -174,23 +781,15 @@ function createPrograms() {
     uniform sampler2D uPrevState;
     uniform sampler2D uPrevColor;
 
-    uniform float uCx;
-    uniform float uCy;
-    uniform float uR;
+    uniform float uCenterX;
+    uniform float uCenterY;
+    uniform float uRadius;
     uniform float uAspect;
     uniform float uCols;
     uniform float uRows;
-    uniform float uOff;
-    uniform float uDir;
-    uniform float uMod;
+    uniform float uIterationPhase;
     uniform int uPower;
     uniform float uLogPower;
-
-    vec3 hsvToRgb(vec3 c) {
-      vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
-      vec3 rgb = clamp(p - 1.0, 0.0, 1.0);
-      return c.z * mix(vec3(1.0), rgb, c.y);
-    }
 
     vec2 cmul(vec2 a, vec2 b) {
       return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -213,8 +812,8 @@ function createPrograms() {
       float tx = pixel.x / uCols;
       float ty = pixel.y / uRows;
 
-      float x0 = uCx + mix(-uR, uR, tx);
-      float y0 = uCy + mix(uR, -uR, ty) * uAspect;
+      float x0 = uCenterX + mix(-uRadius, uRadius, tx);
+      float y0 = uCenterY + mix(uRadius, -uRadius, ty) * uAspect;
 
       vec2 z = texelFetch(uPrevState, texel, 0).rg;
       vec4 prevColor = texelFetch(uPrevColor, texel, 0);
@@ -232,17 +831,18 @@ function createPrograms() {
 
       if (mag2 >= 4.0) {
         float zMag = sqrt(mag2);
-        float val = -(log(log(zMag)) / uLogPower);
-        float mapped = mix(255.0 * (1.0 - uDir), 255.0 * uDir, (uOff + val) / uMod);
-        float hue = fract(mapped / 255.0);
-        vec3 rgb = hsvToRgb(vec3(hue, 1.0, 1.0));
+        float smoothResidual = clamp(-(log(log(zMag)) / uLogPower), 0.0, 1.0);
+        float escapedPhase = (uIterationPhase - 1.0) + smoothResidual;
+        if (uIterationPhase <= 1.0) {
+          escapedPhase = 0.0;
+        }
 
-        outState = zNew;
-        outColor = vec4(rgb, 1.0);
+        outState = vec2(escapedPhase, 0.0);
+        outColor = vec4(0.0, 0.0, 0.0, 1.0);
         outDelta = vec4(1.0, 0.0, 0.0, 1.0);
       } else {
         outState = zNew;
-        outColor = prevColor;
+        outColor = vec4(0.0, 0.0, 0.0, 0.0);
         outDelta = vec4(0.0, 0.0, 0.0, 1.0);
       }
     }
@@ -255,26 +855,24 @@ function createPrograms() {
     in vec2 vUv;
     out vec4 outColor;
 
-    uniform sampler2D uColor;
+    uniform sampler2D uState;
+    uniform sampler2D uMask;
+    uniform sampler2D uPalette;
+    uniform float uPaletteCycleLength;
+    uniform float uStartColorPhase;
 
     void main() {
-      vec3 rgb = texelFetch(uColor, ivec2(gl_FragCoord.xy), 0).rgb;
+      vec4 mask = texture(uMask, vUv);
+      if (mask.a <= 0.5) {
+        outColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+      }
+
+      float escapedPhase = texture(uState, vUv).r;
+      float paletteT = fract(uStartColorPhase + escapedPhase / uPaletteCycleLength);
+
+      vec3 rgb = texture(uPalette, vec2(paletteT, 0.5)).rgb;
       outColor = vec4(rgb, 1.0);
-    }
-  `;
-
-  const sampleFragmentSource = `#version 300 es
-    precision highp float;
-    precision highp sampler2D;
-
-    in vec2 vUv;
-    out vec4 outColor;
-
-    uniform sampler2D uSource;
-
-    void main() {
-      float d = texture(uSource, vUv).r;
-      outColor = vec4(d, 0.0, 0.0, 1.0);
     }
   `;
 
@@ -301,9 +899,9 @@ function createPrograms() {
     layout(location = 0) out vec2 outState;
 
     uniform sampler2D uPrevState;
-    uniform float uCx;
-    uniform float uCy;
-    uniform float uR;
+    uniform float uCenterX;
+    uniform float uCenterY;
+    uniform float uRadius;
     uniform float uAspect;
     uniform float uCols;
     uniform float uRows;
@@ -330,8 +928,8 @@ function createPrograms() {
       float tx = pixel.x / uCols;
       float ty = pixel.y / uRows;
 
-      float x0 = uCx + mix(-uR, uR, tx);
-      float y0 = uCy + mix(uR, -uR, ty) * uAspect;
+      float x0 = uCenterX + mix(-uRadius, uRadius, tx);
+      float y0 = uCenterY + mix(uRadius, -uRadius, ty) * uAspect;
 
       vec2 z = texelFetch(uPrevState, texel, 0).rg;
       vec2 zPow = cpowInt(z, uPower);
@@ -341,32 +939,29 @@ function createPrograms() {
 
   updateProgram = createProgram(vertexShaderSource, updateFragmentSource);
   displayProgram = createProgram(vertexShaderSource, displayFragmentSource);
-  sampleProgram = createProgram(vertexShaderSource, sampleFragmentSource);
   coverageProgram = createProgram(vertexShaderSource, coverageFragmentSource);
   stateOnlyProgram = createProgram(vertexShaderSource, stateOnlyFragmentSource);
 
   updateUniforms = {
     prevState: gl.getUniformLocation(updateProgram, "uPrevState"),
     prevColor: gl.getUniformLocation(updateProgram, "uPrevColor"),
-    cx: gl.getUniformLocation(updateProgram, "uCx"),
-    cy: gl.getUniformLocation(updateProgram, "uCy"),
-    r: gl.getUniformLocation(updateProgram, "uR"),
+    centerX: gl.getUniformLocation(updateProgram, "uCenterX"),
+    centerY: gl.getUniformLocation(updateProgram, "uCenterY"),
+    radius: gl.getUniformLocation(updateProgram, "uRadius"),
     aspect: gl.getUniformLocation(updateProgram, "uAspect"),
     cols: gl.getUniformLocation(updateProgram, "uCols"),
     rows: gl.getUniformLocation(updateProgram, "uRows"),
-    off: gl.getUniformLocation(updateProgram, "uOff"),
-    dir: gl.getUniformLocation(updateProgram, "uDir"),
-    mod: gl.getUniformLocation(updateProgram, "uMod"),
+    iterationPhase: gl.getUniformLocation(updateProgram, "uIterationPhase"),
     power: gl.getUniformLocation(updateProgram, "uPower"),
     logPower: gl.getUniformLocation(updateProgram, "uLogPower")
   };
 
   displayUniforms = {
-    color: gl.getUniformLocation(displayProgram, "uColor")
-  };
-
-  sampleUniforms = {
-    source: gl.getUniformLocation(sampleProgram, "uSource")
+    state: gl.getUniformLocation(displayProgram, "uState"),
+    mask: gl.getUniformLocation(displayProgram, "uMask"),
+    palette: gl.getUniformLocation(displayProgram, "uPalette"),
+    paletteCycleLength: gl.getUniformLocation(displayProgram, "uPaletteCycleLength"),
+    startColorPhase: gl.getUniformLocation(displayProgram, "uStartColorPhase")
   };
 
   coverageUniforms = {
@@ -375,9 +970,9 @@ function createPrograms() {
 
   stateOnlyUniforms = {
     prevState: gl.getUniformLocation(stateOnlyProgram, "uPrevState"),
-    cx: gl.getUniformLocation(stateOnlyProgram, "uCx"),
-    cy: gl.getUniformLocation(stateOnlyProgram, "uCy"),
-    r: gl.getUniformLocation(stateOnlyProgram, "uR"),
+    centerX: gl.getUniformLocation(stateOnlyProgram, "uCenterX"),
+    centerY: gl.getUniformLocation(stateOnlyProgram, "uCenterY"),
+    radius: gl.getUniformLocation(stateOnlyProgram, "uRadius"),
     aspect: gl.getUniformLocation(stateOnlyProgram, "uAspect"),
     cols: gl.getUniformLocation(stateOnlyProgram, "uCols"),
     rows: gl.getUniformLocation(stateOnlyProgram, "uRows"),
@@ -434,6 +1029,96 @@ function createShader(type, source) {
   return shader;
 }
 
+function createPaletteTextures() {
+  for (const palette of PALETTE_OPTIONS) {
+    const texture = gl.createTexture();
+    if (!texture) {
+      throw new Error("Failed to create palette texture.");
+    }
+
+    const lut = buildPaletteLut(palette, PALETTE_LUT_SIZE);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, PALETTE_LUT_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, lut);
+
+    paletteTexturesById.set(palette.id, texture);
+  }
+
+  gl.bindTexture(gl.TEXTURE_2D, null);
+}
+
+function buildPaletteLut(palette, size) {
+  const output = new Uint8Array(size * 4);
+
+  if (palette.kind === "hsv") {
+    for (let i = 0; i < size; i += 1) {
+      const t = size <= 1 ? 0 : i / (size - 1);
+      const rgb = hsvToRgb(t, 1, 1);
+      output[4 * i + 0] = Math.round(rgb[0] * 255);
+      output[4 * i + 1] = Math.round(rgb[1] * 255);
+      output[4 * i + 2] = Math.round(rgb[2] * 255);
+      output[4 * i + 3] = 255;
+    }
+    return output;
+  }
+
+  const rgbStops = palette.stops.map(parseHexRgb);
+  for (let i = 0; i < size; i += 1) {
+    const t = size <= 1 ? 0 : i / (size - 1);
+    const scaled = t * (rgbStops.length - 1);
+    const idx = Math.floor(scaled);
+    const frac = scaled - idx;
+
+    const a = rgbStops[idx];
+    const b = rgbStops[Math.min(rgbStops.length - 1, idx + 1)];
+
+    output[4 * i + 0] = Math.round(a[0] + (b[0] - a[0]) * frac);
+    output[4 * i + 1] = Math.round(a[1] + (b[1] - a[1]) * frac);
+    output[4 * i + 2] = Math.round(a[2] + (b[2] - a[2]) * frac);
+    output[4 * i + 3] = 255;
+  }
+
+  return output;
+}
+
+function hsvToRgb(h, s, v) {
+  const hue = ((h % 1) + 1) % 1;
+  const i = Math.floor(hue * 6);
+  const f = hue * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
+
+  switch (i % 6) {
+    case 0: return [v, t, p];
+    case 1: return [q, v, p];
+    case 2: return [p, v, t];
+    case 3: return [p, q, v];
+    case 4: return [t, p, v];
+    default: return [v, p, q];
+  }
+}
+
+function parseHexRgb(hex) {
+  const value = hex.startsWith("#") ? hex.slice(1) : hex;
+  if (value.length !== 6) {
+    return [255, 255, 255];
+  }
+
+  return [
+    Number.parseInt(value.slice(0, 2), 16),
+    Number.parseInt(value.slice(2, 4), 16),
+    Number.parseInt(value.slice(4, 6), 16)
+  ];
+}
+
+function setActivePalette(paletteId) {
+  activePaletteTexture = paletteTexturesById.get(paletteId) || paletteTexturesById.get(DEFAULT_RUNTIME_SETTINGS.paletteId) || null;
+}
+
 function setupPickerWorker() {
   try {
     pickerWorker = new Worker("./picker-worker.js");
@@ -467,11 +1152,11 @@ function handlePickerMessage(event) {
   pickerBusy = false;
 
   if (data && data.type === "picked") {
-    if (data.id === desiredPickId) {
+    if (data.requestId === desiredPickRequestId) {
       pendingScene = {
-        cx: data.cx,
-        cy: data.cy,
-        r: data.r,
+        centerX: data.centerX,
+        centerY: data.centerY,
+        radius: data.radius,
         power: data.power,
         preIter: data.preIter
       };
@@ -484,7 +1169,7 @@ function handlePickerMessage(event) {
 }
 
 function requestPick() {
-  desiredPickId += 1;
+  desiredPickRequestId += 1;
   maybeLaunchPick();
 }
 
@@ -492,28 +1177,30 @@ function maybeLaunchPick() {
   if (pickerBusy) {
     return;
   }
-  if (desiredPickId <= inFlightPickId) {
+  if (desiredPickRequestId <= inFlightPickRequestId) {
     return;
   }
 
   pickerBusy = true;
-  inFlightPickId = desiredPickId;
-  const requestedPower = chooseScenePower();
+  inFlightPickRequestId = desiredPickRequestId;
+
   const request = {
-    id: inFlightPickId,
-    width: canvas.width,
-    height: canvas.height,
-    rows: simRows,
-    cols: simCols,
-    depth: PICK_DEPTH,
-    grid: PICK_GRID,
-    minRadius: MIN_RENDER_RADIUS,
-    power: requestedPower
+    requestId: inFlightPickRequestId,
+    viewportWidth: canvas.width,
+    viewportHeight: canvas.height,
+    simulationAspect: aspect,
+    simulationRows: simRows,
+    simulationCols: simCols,
+    searchDepth: activeSettings.boundarySearchDepth,
+    searchGridSize: PICK_GRID_SIZE,
+    minimumRadius: MINIMUM_RENDER_RADIUS,
+    powerMin: activeSettings.powerMin,
+    powerMax: activeSettings.powerMax
   };
 
   if (pickerWorker) {
     pickerWorker.postMessage({
-      type: "pick",
+      type: "pickScene",
       ...request
     });
     return;
@@ -521,9 +1208,9 @@ function maybeLaunchPick() {
 
   setTimeout(() => {
     try {
-      const picked = pickSceneLocal(request);
-      if (request.id === desiredPickId) {
-        pendingScene = picked;
+      const pickedScene = pickSceneLocal(request);
+      if (request.requestId === desiredPickRequestId) {
+        pendingScene = pickedScene;
       }
     } catch (error) {
       console.error("Main-thread picker failed:", error);
@@ -534,12 +1221,49 @@ function maybeLaunchPick() {
   }, 0);
 }
 
-function chooseScenePower() {
-  const idx = (Math.random() * POWER_OPTIONS.length) | 0;
-  return POWER_OPTIONS[idx];
+function chooseScenePower(powerMin, powerMax) {
+  const minPower = clampNumber(Math.round(powerMin), MIN_POWER, MAX_POWER);
+  const maxPower = clampNumber(Math.round(powerMax), MIN_POWER, MAX_POWER);
+  const from = Math.min(minPower, maxPower);
+  const to = Math.max(minPower, maxPower);
+  return from + ((Math.random() * (to - from + 1)) | 0);
 }
 
-function handleResize() {
+function handleVisibilityChange() {
+  if (!document.hidden) {
+    lastFrameTimeMs = performance.now();
+  }
+}
+
+function chooseSimulationGrid(width, height, targetScale) {
+  const targetCols = Math.max(1, Math.round(width / targetScale));
+  let bestCols = targetCols;
+  let bestRows = Math.max(1, Math.round((targetCols * height) / width));
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  const minCols = Math.max(1, targetCols - 24);
+  const maxCols = Math.max(minCols, targetCols + 24);
+
+  for (let cols = minCols; cols <= maxCols; cols += 1) {
+    const rows = Math.max(1, Math.round((cols * height) / width));
+    const pixelWidth = width / cols;
+    const pixelHeight = height / rows;
+
+    const squareError = Math.abs(pixelWidth - pixelHeight);
+    const scaleError = Math.abs((pixelWidth + pixelHeight) * 0.5 - targetScale);
+    const score = squareError * 8 + scaleError;
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestCols = cols;
+      bestRows = rows;
+    }
+  }
+
+  return { cols: bestCols, rows: bestRows };
+}
+
+function handleResize(forceRecreate) {
   if (!gl) {
     return;
   }
@@ -549,16 +1273,19 @@ function handleResize() {
   const nextWidth = Math.max(1, Math.round(rect.width * dpr));
   const nextHeight = Math.max(1, Math.round(rect.height * dpr));
 
-  if (canvas.width === nextWidth && canvas.height === nextHeight) {
+  const scaleChanged = appliedRenderScale !== activeSettings.renderScale;
+  if (!forceRecreate && !scaleChanged && canvas.width === nextWidth && canvas.height === nextHeight) {
     return;
   }
 
   canvas.width = nextWidth;
   canvas.height = nextHeight;
 
-  simCols = Math.max(1, Math.ceil(canvas.width / SCALE));
-  simRows = Math.max(1, Math.ceil(canvas.height / SCALE));
-  aspect = canvas.height / canvas.width;
+  appliedRenderScale = activeSettings.renderScale;
+  const simulationGrid = chooseSimulationGrid(canvas.width, canvas.height, appliedRenderScale);
+  simCols = simulationGrid.cols;
+  simRows = simulationGrid.rows;
+  aspect = simRows / simCols;
 
   try {
     recreateRenderTargets();
@@ -573,8 +1300,11 @@ function handleResize() {
   pendingScene = null;
   sceneJustReset = false;
   refreshRequested = false;
-  counter = 0;
-  frameCounter = 0;
+
+  sceneElapsedFrames = 0;
+  sceneElapsedIterations = 0;
+  sceneElapsedSeconds = 0;
+  iterationAccumulator = 0;
 
   requestPick();
 }
@@ -583,7 +1313,12 @@ function recreateRenderTargets() {
   for (const target of renderTargets) {
     destroyRenderTarget(target);
   }
-  renderTargets = [createRenderTarget(simCols, simRows), createRenderTarget(simCols, simRows)];
+
+  renderTargets = [
+    createRenderTarget(simCols, simRows),
+    createRenderTarget(simCols, simRows)
+  ];
+
   currentIndex = 0;
   clearSimulationTextures();
 }
@@ -599,9 +1334,9 @@ function destroyRenderTarget(target) {
 }
 
 function createRenderTarget(width, height) {
-  const stateTex = createTexture(width, height, stateInternalFormat, gl.RG, stateType, gl.NEAREST);
-  const colorTex = createTexture(width, height, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
-  const deltaTex = createTexture(width, height, gl.R8, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR);
+  const stateTex = createTexture(width, height, stateInternalFormat, gl.RG, stateType, gl.NEAREST, null);
+  const colorTex = createTexture(width, height, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST, null);
+  const deltaTex = createTexture(width, height, gl.R8, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR, null);
 
   const fbo = gl.createFramebuffer();
   if (!fbo) {
@@ -621,11 +1356,10 @@ function createRenderTarget(width, height) {
   }
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
   return { fbo, stateTex, colorTex, deltaTex };
 }
 
-function createTexture(width, height, internalFormat, format, type, filter) {
+function createTexture(width, height, internalFormat, format, type, filter, data) {
   const tex = gl.createTexture();
   if (!tex) {
     throw new Error("Failed to create texture.");
@@ -636,7 +1370,7 @@ function createTexture(width, height, internalFormat, format, type, filter) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, null);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, data);
   gl.bindTexture(gl.TEXTURE_2D, null);
 
   return tex;
@@ -666,7 +1400,7 @@ function recreateSampleTarget() {
   const width = Math.min(simCols, sampleCols);
   const height = Math.min(simRows, sampleRows);
 
-  const texture = createTexture(width, height, gl.R8, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR);
+  const texture = createTexture(width, height, gl.R8, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR, null);
   const fbo = gl.createFramebuffer();
   if (!fbo) {
     throw new Error("Failed to create sample framebuffer.");
@@ -689,23 +1423,31 @@ function recreateSampleTarget() {
 }
 
 function applyScene(scene) {
-  cx = scene.cx;
-  cy = scene.cy;
-  const precisionSafeRadius = getPrecisionSafeRadius(scene.cx, scene.cy);
-  r = Math.max(scene.r, precisionSafeRadius);
-  power = Math.max(2, Math.min(MAX_POWER, scene.power | 0));
-  logPower = Math.log(power);
+  sceneCenterX = scene.centerX;
+  sceneCenterY = scene.centerY;
 
-  dir = Math.random() < 0.5 ? 0 : 1;
-  off = Math.random() * MOD;
-  counter = 0;
-  frameCounter = 0;
+  const precisionSafeRadius = getPrecisionSafeRadius(scene.centerX, scene.centerY);
+  sceneRadius = Math.max(scene.radius, precisionSafeRadius);
+  scenePower = clampNumber(scene.power | 0, MIN_POWER, MAX_POWER);
+  sceneLogPower = Math.log(scenePower);
+
+  sceneIterationPhase = 1;
+  sceneStartColorPhase =
+    activeSettings.startColorMode === "random"
+      ? Math.random()
+      : activeSettings.startColorPhase;
+
+  sceneElapsedFrames = 0;
+  sceneElapsedIterations = 0;
+  sceneElapsedSeconds = 0;
+  iterationAccumulator = 0;
+
   refreshRequested = false;
   sceneJustReset = true;
 
   let preIterEstimate = Math.max(0, scene.preIter | 0);
-  if (r > scene.r) {
-    preIterEstimate = computePreIterEstimateLocal(cx, cy, r, aspect, power);
+  if (sceneRadius > scene.radius) {
+    preIterEstimate = computePreIterEstimateLocal(sceneCenterX, sceneCenterY, sceneRadius, aspect, scenePower);
   }
 
   clearSimulationTextures();
@@ -716,7 +1458,7 @@ function applyScene(scene) {
 function getPrecisionSafeRadius(centerX, centerY) {
   const stepUlp = Math.max(getFloat32Ulp(centerX), getFloat32Ulp(centerY));
   const widthDrivenFloor = 0.5 * simCols * PRECISION_STEP_ULPS * stepUlp;
-  return Math.max(MIN_RENDER_RADIUS, widthDrivenFloor);
+  return Math.max(MINIMUM_RENDER_RADIUS, widthDrivenFloor);
 }
 
 function getFloat32Ulp(value) {
@@ -733,40 +1475,56 @@ function getFloat32Ulp(value) {
 }
 
 function pickSceneLocal(request) {
-  const localAspect = request.height / request.width;
-  const selectedPower = Math.max(2, Math.min(MAX_POWER, request.power | 0));
+  const localAspect = Number.isFinite(request.simulationAspect) && request.simulationAspect > 0
+    ? request.simulationAspect
+    : request.viewportHeight / request.viewportWidth;
+  const selectedPower = chooseScenePower(request.powerMin, request.powerMax);
+
   const point = findValidBoundaryPointLocal(
     localAspect,
-    request.depth,
-    request.grid,
-    request.minRadius,
+    request.searchDepth,
+    request.searchGridSize,
+    request.minimumRadius,
     selectedPower
   );
-  const preIter = computePreIterEstimateLocal(point.cx, point.cy, point.r, localAspect, selectedPower);
+
+  const preIter = computePreIterEstimateLocal(point.centerX, point.centerY, point.radius, localAspect, selectedPower);
   return {
-    cx: point.cx,
-    cy: point.cy,
-    r: point.r,
+    centerX: point.centerX,
+    centerY: point.centerY,
+    radius: point.radius,
     power: selectedPower,
     preIter
   };
 }
 
-function findValidBoundaryPointLocal(localAspect, depth, grid, minRadius, scenePower) {
+function findValidBoundaryPointLocal(localAspect, searchDepth, searchGridSize, minimumRadius, scenePowerValue) {
   let fallback = null;
   let best = null;
-  const targetRadius = minRadius * PICK_TARGET_RADIUS_FACTOR;
+  const requestedTargetRadius = minimumRadius * PICK_TARGET_RADIUS_FACTOR;
+  const achievableRadius = 1.25 / Math.pow(4, Math.max(1, searchDepth));
+  const targetRadius = Math.max(requestedTargetRadius, achievableRadius);
 
   for (let attempt = 0; attempt < PICK_MAX_RETRIES; attempt += 1) {
-    const point = pickBoundaryPointLocal(localAspect, depth, grid, minRadius, scenePower);
+    const point = pickBoundaryPointLocal(
+      localAspect,
+      searchDepth,
+      searchGridSize,
+      minimumRadius,
+      scenePowerValue
+    );
+
     fallback = point;
-    if (Math.abs(point.cy) <= PICK_MIN_CY_ABS) {
+
+    if (Math.abs(point.centerY) <= PICK_MIN_CY_ABS) {
       continue;
     }
-    if (!best || point.r < best.r) {
+
+    if (!best || point.radius < best.radius) {
       best = point;
     }
-    if (point.r <= targetRadius) {
+
+    if (point.radius <= targetRadius) {
       break;
     }
   }
@@ -774,33 +1532,36 @@ function findValidBoundaryPointLocal(localAspect, depth, grid, minRadius, sceneP
   if (best) {
     return best;
   }
-  return fallback || { cx: -0.75, cy: 0.3, r: minRadius };
+
+  return fallback || { centerX: -0.75, centerY: 0.3, radius: minimumRadius };
 }
 
-function pickBoundaryPointLocal(localAspect, depth, grid, minRadius, scenePower) {
-  const rows = grid;
-  const cols = grid;
-  const inside = new Uint8Array(rows * cols);
-  const boundaryI = [];
-  const boundaryJ = [];
+function pickBoundaryPointLocal(localAspect, searchDepth, searchGridSize, minimumRadius, scenePowerValue) {
+  const rows = searchGridSize;
+  const cols = searchGridSize;
+  const count = rows * cols;
 
-  let pickedCx = -0.75;
-  let pickedCy = 0.0;
-  let pickedR = 1.25;
+  const inside = new Uint8Array(count);
+  const boundaryIndices = new Uint32Array(count);
+  const xCoord = new Float64Array(cols);
+  const yCoord = new Float64Array(rows);
+
+  let centerX = -0.75;
+  let centerY = 0.0;
+  let radius = 1.25;
   let maxIter = 100;
 
-  for (let level = 0; level < depth && pickedR > minRadius; level += 1) {
-    boundaryI.length = 0;
-    boundaryJ.length = 0;
-
-    const xCoord = new Float64Array(cols);
-    const yCoord = new Float64Array(rows);
-
+  for (let level = 0; level < searchDepth && radius > minimumRadius; level += 1) {
+    const xStart = centerX - radius;
+    const xStep = (2.0 * radius) / cols;
     for (let i = 0; i < cols; i += 1) {
-      xCoord[i] = pickedCx + mapValue(i, 0, cols, -pickedR, pickedR);
+      xCoord[i] = xStart + xStep * i;
     }
+
+    const yStart = centerY + radius * localAspect;
+    const yStep = (2.0 * radius * localAspect) / rows;
     for (let j = 0; j < rows; j += 1) {
-      yCoord[j] = pickedCy + mapValue(j, 0, rows, pickedR, -pickedR) * localAspect;
+      yCoord[j] = yStart - yStep * j;
     }
 
     for (let j = 0; j < rows; j += 1) {
@@ -808,47 +1569,65 @@ function pickBoundaryPointLocal(localAspect, depth, grid, minRadius, scenePower)
       const rowOffset = j * cols;
       for (let i = 0; i < cols; i += 1) {
         const x0 = xCoord[i];
-        inside[rowOffset + i] = escapesAfterMaxIterLocal(x0, y0, maxIter, scenePower) ? 0 : 1;
+        inside[rowOffset + i] = escapesAfterMaxIterLocal(x0, y0, maxIter, scenePowerValue) ? 0 : 1;
       }
     }
 
-    for (let j = 0; j < rows; j += 1) {
-      for (let i = 0; i < cols; i += 1) {
-        if (onBoundaryLocal(inside, cols, rows, i, j)) {
-          boundaryI.push(i);
-          boundaryJ.push(j);
+    let boundaryCount = 0;
+
+    for (let j = 1; j < rows - 1; j += 1) {
+      const rowOffset = j * cols;
+      for (let i = 1; i < cols - 1; i += 1) {
+        const idx = rowOffset + i;
+        if (inside[idx] === 0) {
+          continue;
+        }
+
+        if (
+          inside[idx - cols - 1] === 0 ||
+          inside[idx - cols] === 0 ||
+          inside[idx - cols + 1] === 0 ||
+          inside[idx - 1] === 0 ||
+          inside[idx + 1] === 0 ||
+          inside[idx + cols - 1] === 0 ||
+          inside[idx + cols] === 0 ||
+          inside[idx + cols + 1] === 0
+        ) {
+          boundaryIndices[boundaryCount] = idx;
+          boundaryCount += 1;
         }
       }
     }
 
-    if (boundaryI.length === 0) {
+    if (boundaryCount === 0) {
       break;
     }
 
-    const pickIdx = (Math.random() * boundaryI.length) | 0;
-    const i = boundaryI[pickIdx];
-    const j = boundaryJ[pickIdx];
+    const pickedBoundaryIdx = boundaryIndices[(Math.random() * boundaryCount) | 0];
 
-    pickedCx = pickedCx + mapValue(i, 0, cols, -pickedR, pickedR);
-    pickedCy = pickedCy + mapValue(j, 0, rows, pickedR, -pickedR) * localAspect;
-    pickedR /= 4.0;
+    const pickedCol = pickedBoundaryIdx % cols;
+    const pickedRow = (pickedBoundaryIdx / cols) | 0;
+
+    centerX = xCoord[pickedCol];
+    centerY = yCoord[pickedRow];
+    radius /= 4.0;
     maxIter += 100;
   }
 
-  if (pickedR < minRadius) {
-    pickedR = minRadius;
+  if (radius < minimumRadius) {
+    radius = minimumRadius;
   }
 
-  return { cx: pickedCx, cy: pickedCy, r: pickedR };
+  return { centerX, centerY, radius };
 }
 
-function escapesAfterMaxIterLocal(x0, y0, maxIter, scenePower) {
+function escapesAfterMaxIterLocal(x0, y0, maxIter, scenePowerValue) {
   let xVal = x0;
   let yVal = y0;
   let n = 0;
 
   while (xVal * xVal + yVal * yVal <= 4.0 && n < maxIter) {
-    const iter = iterateComplexPower(xVal, yVal, x0, y0, scenePower);
+    const iter = iterateComplexPower(xVal, yVal, x0, y0, scenePowerValue);
     xVal = iter.x;
     yVal = iter.y;
     n += 1;
@@ -857,40 +1636,23 @@ function escapesAfterMaxIterLocal(x0, y0, maxIter, scenePower) {
   return n < maxIter;
 }
 
-function onBoundaryLocal(map, cols, rows, i, j) {
-  const base = j * cols + i;
-  if (map[base] === 0) {
-    return false;
-  }
-
-  for (let dy = -1; dy <= 1; dy += 1) {
-    for (let dx = -1; dx <= 1; dx += 1) {
-      const nx = i + dx;
-      const ny = j + dy;
-      if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) {
-        return false;
-      }
-      if (map[ny * cols + nx] === 0) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-function computePreIterEstimateLocal(centerX, centerY, radius, localAspect, scenePower) {
+function computePreIterEstimateLocal(centerX, centerY, radius, localAspect, scenePowerValue) {
   const coarseCols = Math.max(16, Math.min(PREITER_MAX_COLS, simCols));
   const coarseRows = Math.max(16, Math.min(PREITER_MAX_ROWS, simRows));
 
   const xCoord = new Float64Array(coarseCols);
   const yCoord = new Float64Array(coarseRows);
 
+  const xStart = centerX - radius;
+  const xStep = (2.0 * radius) / coarseCols;
   for (let i = 0; i < coarseCols; i += 1) {
-    xCoord[i] = centerX + mapValue(i, 0, coarseCols, -radius, radius);
+    xCoord[i] = xStart + xStep * i;
   }
+
+  const yStart = centerY + radius * localAspect;
+  const yStep = (2.0 * radius * localAspect) / coarseRows;
   for (let j = 0; j < coarseRows; j += 1) {
-    yCoord[j] = centerY + mapValue(j, 0, coarseRows, radius, -radius) * localAspect;
+    yCoord[j] = yStart - yStep * j;
   }
 
   const count = coarseCols * coarseRows;
@@ -909,7 +1671,7 @@ function computePreIterEstimateLocal(centerX, centerY, radius, localAspect, scen
 
       for (let i = 0; i < coarseCols; i += 1) {
         const idx = rowOffset + i;
-        const iter = iterateComplexPower(x[idx], y[idx], xCoord[i], y0, scenePower);
+        const iter = iterateComplexPower(x[idx], y[idx], xCoord[i], y0, scenePowerValue);
         nextX[idx] = iter.x;
         nextY[idx] = iter.y;
         if (iter.x * iter.x + iter.y * iter.y >= 4.0) {
@@ -935,21 +1697,17 @@ function computePreIterEstimateLocal(centerX, centerY, radius, localAspect, scen
   return safeIterations;
 }
 
-function iterateComplexPower(x, y, x0, y0, scenePower) {
+function iterateComplexPower(x, y, x0, y0, scenePowerValue) {
   let px = x;
   let py = y;
 
-  for (let p = 1; p < scenePower; p += 1) {
+  for (let p = 1; p < scenePowerValue; p += 1) {
     const pxNew = px * x - py * y;
     py = px * y + py * x;
     px = pxNew;
   }
 
   return { x: px + x0, y: py + y0 };
-}
-
-function mapValue(value, inStart, inStop, outStart, outStop) {
-  return outStart + (outStop - outStart) * ((value - inStart) / (inStop - inStart));
 }
 
 function runUpdatePass() {
@@ -971,17 +1729,15 @@ function runUpdatePass() {
   gl.bindTexture(gl.TEXTURE_2D, src.colorTex);
   gl.uniform1i(updateUniforms.prevColor, 1);
 
-  gl.uniform1f(updateUniforms.cx, cx);
-  gl.uniform1f(updateUniforms.cy, cy);
-  gl.uniform1f(updateUniforms.r, r);
+  gl.uniform1f(updateUniforms.centerX, sceneCenterX);
+  gl.uniform1f(updateUniforms.centerY, sceneCenterY);
+  gl.uniform1f(updateUniforms.radius, sceneRadius);
   gl.uniform1f(updateUniforms.aspect, aspect);
   gl.uniform1f(updateUniforms.cols, simCols);
   gl.uniform1f(updateUniforms.rows, simRows);
-  gl.uniform1f(updateUniforms.off, off);
-  gl.uniform1f(updateUniforms.dir, dir);
-  gl.uniform1f(updateUniforms.mod, MOD);
-  gl.uniform1i(updateUniforms.power, power);
-  gl.uniform1f(updateUniforms.logPower, logPower);
+  gl.uniform1f(updateUniforms.iterationPhase, sceneIterationPhase);
+  gl.uniform1i(updateUniforms.power, scenePower);
+  gl.uniform1f(updateUniforms.logPower, sceneLogPower);
 
   gl.drawArrays(gl.TRIANGLES, 0, FULLSCREEN_TRIANGLES);
 
@@ -1003,47 +1759,45 @@ function runStateOnlyPass() {
   gl.bindTexture(gl.TEXTURE_2D, src.stateTex);
   gl.uniform1i(stateOnlyUniforms.prevState, 0);
 
-  gl.uniform1f(stateOnlyUniforms.cx, cx);
-  gl.uniform1f(stateOnlyUniforms.cy, cy);
-  gl.uniform1f(stateOnlyUniforms.r, r);
+  gl.uniform1f(stateOnlyUniforms.centerX, sceneCenterX);
+  gl.uniform1f(stateOnlyUniforms.centerY, sceneCenterY);
+  gl.uniform1f(stateOnlyUniforms.radius, sceneRadius);
   gl.uniform1f(stateOnlyUniforms.aspect, aspect);
   gl.uniform1f(stateOnlyUniforms.cols, simCols);
   gl.uniform1f(stateOnlyUniforms.rows, simRows);
-  gl.uniform1i(stateOnlyUniforms.power, power);
+  gl.uniform1i(stateOnlyUniforms.power, scenePower);
 
   gl.drawArrays(gl.TRIANGLES, 0, FULLSCREEN_TRIANGLES);
 
   currentIndex = 1 - currentIndex;
 }
 
+function advanceSceneIteration(iterationSteps) {
+  sceneIterationPhase += iterationSteps;
+}
+
 function estimateColorCoverage() {
   if (!sampleTarget) {
     return 0;
   }
+
   const src = renderTargets[currentIndex];
-  const sum = sampleTextureSum(src.colorTex, true);
+  const sum = sampleTextureSum(src.colorTex);
   const maxSum = 255 * sampleTarget.width * sampleTarget.height;
   return maxSum > 0 ? sum / maxSum : 0;
 }
 
-function sampleTextureSum(sourceTexture, sampleAlpha) {
+function sampleTextureSum(sourceTexture) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, sampleTarget.fbo);
   gl.viewport(0, 0, sampleTarget.width, sampleTarget.height);
   gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
 
-  if (sampleAlpha) {
-    gl.useProgram(coverageProgram);
-    gl.bindVertexArray(vao);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, sourceTexture);
-    gl.uniform1i(coverageUniforms.source, 0);
-  } else {
-    gl.useProgram(sampleProgram);
-    gl.bindVertexArray(vao);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, sourceTexture);
-    gl.uniform1i(sampleUniforms.source, 0);
-  }
+  gl.useProgram(coverageProgram);
+  gl.bindVertexArray(vao);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, sourceTexture);
+  gl.uniform1i(coverageUniforms.source, 0);
 
   gl.drawArrays(gl.TRIANGLES, 0, FULLSCREEN_TRIANGLES);
   gl.readPixels(0, 0, sampleTarget.width, sampleTarget.height, gl.RED, gl.UNSIGNED_BYTE, sampleReadBuffer);
@@ -1060,16 +1814,14 @@ function prepareSceneStateForFirstVisibleColor(preIterEstimate) {
     SCENE_PREP_MAX_ITERS,
     Math.max(0, preIterEstimate - PREITER_SAFETY_MARGIN)
   );
+
   for (let i = 0; i < preloadIters; i += 1) {
     runStateOnlyPass();
   }
 
   for (let i = preloadIters; i < SCENE_PREP_MAX_ITERS; i += 1) {
     runUpdatePass();
-    off += 1;
-    if (off >= MOD) {
-      off -= MOD;
-    }
+    advanceSceneIteration(1);
     if (estimateColorCoverage() > 0) {
       return true;
     }
@@ -1088,8 +1840,19 @@ function drawToScreen() {
   gl.bindVertexArray(vao);
 
   gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, src.stateTex);
+  gl.uniform1i(displayUniforms.state, 0);
+
+  gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, src.colorTex);
-  gl.uniform1i(displayUniforms.color, 0);
+  gl.uniform1i(displayUniforms.mask, 1);
+
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, activePaletteTexture);
+  gl.uniform1i(displayUniforms.palette, 2);
+
+  gl.uniform1f(displayUniforms.paletteCycleLength, activeSettings.paletteCycleLength);
+  gl.uniform1f(displayUniforms.startColorPhase, sceneStartColorPhase);
 
   gl.drawArrays(gl.TRIANGLES, 0, FULLSCREEN_TRIANGLES);
 }
@@ -1100,28 +1863,57 @@ function clearScreen() {
   gl.clear(gl.COLOR_BUFFER_BIT);
 }
 
+function requestSceneRefreshNow() {
+  refreshRequested = true;
+  requestPick();
+  ensureNextPickReady();
+}
+
 function ensureNextPickReady() {
-  if (pendingScene || pickerBusy || desiredPickId > inFlightPickId) {
+  if (pendingScene || pickerBusy || desiredPickRequestId > inFlightPickRequestId) {
     return;
   }
   requestPick();
 }
 
-function renderLoop() {
+function hasReachedSceneLengthLimit() {
+  const limit = activeSettings.sceneSwitchLimit;
+
+  if (activeSettings.sceneSwitchMode === SCENE_SWITCH_MODE_SECONDS) {
+    return sceneElapsedSeconds >= limit;
+  }
+  if (activeSettings.sceneSwitchMode === SCENE_SWITCH_MODE_ITERATIONS) {
+    return sceneElapsedIterations >= limit;
+  }
+  return sceneElapsedFrames >= limit;
+}
+
+function renderLoop(timeMs) {
   if (unsupportedEl.style.display === "grid") {
     return;
   }
+
   requestAnimationFrame(renderLoop);
 
   if (document.hidden) {
+    lastFrameTimeMs = timeMs;
     return;
   }
 
+  if (lastFrameTimeMs === 0) {
+    lastFrameTimeMs = timeMs;
+  }
+
+  const deltaSeconds = Math.min(0.25, Math.max(0, (timeMs - lastFrameTimeMs) / 1000));
+  lastFrameTimeMs = timeMs;
+
   if (!sceneActive) {
+    activatePendingPickerSettingsIfNeeded();
+
     if (pendingScene) {
-      const scene = pendingScene;
+      const nextScene = pendingScene;
       pendingScene = null;
-      applyScene(scene);
+      applyScene(nextScene);
       requestPick();
       drawToScreen();
       sceneJustReset = false;
@@ -1132,10 +1924,14 @@ function renderLoop() {
     return;
   }
 
+  if (refreshRequested) {
+    activatePendingPickerSettingsIfNeeded();
+  }
+
   if (refreshRequested && pendingScene) {
-    const scene = pendingScene;
+    const nextScene = pendingScene;
     pendingScene = null;
-    applyScene(scene);
+    applyScene(nextScene);
     requestPick();
     drawToScreen();
     sceneJustReset = false;
@@ -1148,29 +1944,36 @@ function renderLoop() {
     return;
   }
 
-  runUpdatePass();
-  drawToScreen();
+  sceneElapsedFrames += 1;
+  sceneElapsedSeconds += deltaSeconds;
 
-  off += 1;
-  if (off >= MOD) {
-    off -= MOD;
-  }
+  iterationAccumulator += activeSettings.iterationRate * deltaSeconds;
+  const updatesToRun = Math.min(MAX_UPDATE_PASSES_PER_FRAME, Math.floor(iterationAccumulator));
 
-  counter += 1;
-  frameCounter += 1;
-
-  if (frameCounter % SAMPLE_EVERY_N_FRAMES === 0) {
-    const coverage = estimateColorCoverage();
-    if (coverage >= COLOR_COVERAGE_TARGET) {
-      refreshRequested = true;
+  if (updatesToRun > 0) {
+    iterationAccumulator -= updatesToRun;
+    for (let i = 0; i < updatesToRun; i += 1) {
+      runUpdatePass();
+      advanceSceneIteration(1);
+      sceneElapsedIterations += 1;
     }
   }
 
-  if (counter >= MAX_SCENE_FRAMES) {
+  drawToScreen();
+
+  if (hasReachedSceneLengthLimit()) {
     refreshRequested = true;
   }
 
   if (refreshRequested) {
     ensureNextPickReady();
+  }
+}
+
+function showUnsupported(message) {
+  unsupportedEl.textContent = message;
+  unsupportedEl.style.display = "grid";
+  if (canvas) {
+    canvas.style.display = "none";
   }
 }
