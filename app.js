@@ -12,6 +12,9 @@ const MAX_POWER = 8;
 const FLOAT32_MIN_STEP = Math.pow(2, -149);
 const PRECISION_STEP_ULPS = 4.0;
 const SCENE_PREP_MAX_ITERS = 20000;
+const SCENE_PREP_MAX_PASSES_PER_FRAME = 96;
+const SCENE_PREP_TIME_BUDGET_MS = 6.0;
+const SCENE_PREP_COVERAGE_CHECK_INTERVAL = 4;
 const PREITER_MAX_ITERS = 2048;
 const PREITER_MAX_COLS = 320;
 const PREITER_MAX_ROWS = 180;
@@ -19,13 +22,20 @@ const PREITER_SAFETY_MARGIN = 24;
 
 const MAX_UPDATE_PASSES_PER_FRAME = 24;
 const FULLSCREEN_TRIANGLES = 3;
+const COLOR_CURVE_EXPONENT = Math.log(0.21) / Math.log(0.5);
+const MIN_ITERATION_RATE = 15;
+const MAX_ITERATION_RATE = 720;
 
-const SETTINGS_STORAGE_KEY = "mandelbrotBackground.settings.v1";
-const SETTINGS_SCHEMA_VERSION = 1;
+const SETTINGS_STORAGE_KEY = "mandelbrotBackground.settings.v2";
+const LEGACY_SETTINGS_STORAGE_KEY = "mandelbrotBackground.settings.v1";
+const SETTINGS_SCHEMA_VERSION = 2;
 
 const SCENE_SWITCH_MODE_SECONDS = "seconds";
 const SCENE_SWITCH_MODE_FRAMES = "frames";
 const SCENE_SWITCH_MODE_ITERATIONS = "iterations";
+const SCENE_REFRESH_NONE = "none";
+const SCENE_REFRESH_AUTO = "auto";
+const SCENE_REFRESH_MANUAL = "manual";
 
 const SCENE_SWITCH_LIMITS = {
   [SCENE_SWITCH_MODE_SECONDS]: { min: 6, max: 120, step: 0.5, defaultValue: 36 },
@@ -35,11 +45,11 @@ const SCENE_SWITCH_LIMITS = {
 
 const RENDER_SCALE_OPTIONS = [1, 1.5, 2, 3];
 
-const PALETTE_LUT_SIZE = 512;
+const PALETTE_LUT_SIZE = 2048;
 const PALETTE_OPTIONS = [
   {
     id: "hsv-classic",
-    name: "HSV Classic",
+    name: "HSV",
     kind: "hsv"
   },
   {
@@ -58,35 +68,54 @@ const PALETTE_OPTIONS = [
   },
   {
     id: "red-blue-loop",
-    name: "Red-Blue Loop",
+    name: "Red-Blue",
     kind: "stops",
     stops: ["#2a0011", "#8f1d2c", "#ff4655", "#478bff", "#1f2f8f", "#2a0011"]
   },
   {
     id: "ocean-loop",
-    name: "Ocean Loop",
+    name: "Ocean",
     kind: "stops",
     stops: ["#0a1d42", "#0b4f87", "#00a6a6", "#4ae3d2", "#0a1d42"]
   },
   {
     id: "sunset-loop",
-    name: "Sunset Loop",
+    name: "Sunset",
     kind: "stops",
     stops: ["#38004b", "#8a1f7a", "#f15b4a", "#ffb34d", "#38004b"]
   },
   {
     id: "neon-loop",
-    name: "Neon Loop",
+    name: "Neon",
     kind: "stops",
     stops: ["#14002b", "#2d45ff", "#00c8ff", "#4eff9e", "#14002b"]
   },
   {
     id: "violet-loop",
-    name: "Violet Loop",
+    name: "Violet",
     kind: "stops",
     stops: ["#12003d", "#4f2fb3", "#8b5cf6", "#f58cff", "#12003d"]
   }
 ];
+
+const PALETTE_SCOPED_SETTING_KEYS = Object.freeze([
+  "paletteCycleLength",
+  "colorIncrementCurve",
+  "startColorMode",
+  "startColorPhase",
+  "smoothColors"
+]);
+
+const GLOBAL_SETTING_KEYS = Object.freeze([
+  "renderScale",
+  "sceneSwitchMode",
+  "sceneSwitchLimit",
+  "iterationRate",
+  "boundarySearchDepth",
+  "powerMin",
+  "powerMax",
+  "showButtons"
+]);
 
 const DEFAULT_RUNTIME_SETTINGS = Object.freeze({
   renderScale: 1,
@@ -95,15 +124,18 @@ const DEFAULT_RUNTIME_SETTINGS = Object.freeze({
   colorIncrementCurve: 0,
   startColorMode: "random",
   startColorPhase: 0,
-  sceneSwitchMode: SCENE_SWITCH_MODE_FRAMES,
-  sceneSwitchLimit: 1800,
+  smoothColors: true,
+  sceneSwitchMode: SCENE_SWITCH_MODE_SECONDS,
+  sceneSwitchLimit: 36,
   iterationRate: 60,
   boundarySearchDepth: 20,
   powerMin: 2,
-  powerMax: 5
+  powerMax: 5,
+  showButtons: true
 });
 
-let runtimeSettings = loadRuntimeSettings();
+let settingsStore = loadSettingsStore();
+let runtimeSettings = buildRuntimeSettingsFromStore(settingsStore);
 let activeSettings = { ...runtimeSettings };
 let pickerSettingsPending = false;
 
@@ -111,6 +143,7 @@ let canvas;
 let unsupportedEl;
 let menuEdgeZone;
 let menuOverlay;
+let menuPeekButton;
 let settingsDrawer;
 let drawerDragHandle;
 
@@ -164,7 +197,11 @@ let sceneJustReset = false;
 
 let sceneActive = false;
 let refreshRequested = false;
+let refreshRequestKind = SCENE_REFRESH_NONE;
 let pendingScene = null;
+let scenePaused = false;
+let sceneHeld = false;
+let scenePreparation = null;
 
 let pickerWorker = null;
 let pickerBusy = false;
@@ -239,13 +276,21 @@ function cacheDomElements() {
 
   menuEdgeZone = document.getElementById("menu-edge-zone");
   menuOverlay = document.getElementById("menu-overlay");
+  menuPeekButton = document.getElementById("menu-peek-button");
   settingsDrawer = document.getElementById("settings-drawer");
   drawerDragHandle = document.getElementById("drawer-drag-handle");
 
   ui.closeButton = document.getElementById("menu-close-button");
+  ui.sceneHud = document.getElementById("scene-hud");
+  ui.saveFrameButton = document.getElementById("save-frame-button");
+  ui.pauseSceneButton = document.getElementById("pause-scene-button");
+  ui.pauseSceneLabel = document.getElementById("pause-scene-label");
+  ui.holdSceneButton = document.getElementById("hold-scene-button");
+  ui.hudNewSceneButton = document.getElementById("hud-new-scene-button");
   ui.paletteSelect = document.getElementById("palette-select");
   ui.paletteCycleSlider = document.getElementById("palette-cycle-slider");
   ui.paletteCycleValue = document.getElementById("palette-cycle-value");
+  ui.smoothColorsToggle = document.getElementById("smooth-colors-toggle");
   ui.colorIncrementCurveSlider = document.getElementById("color-increment-curve-slider");
   ui.colorIncrementCurveValue = document.getElementById("color-increment-curve-value");
   ui.startColorRandomToggle = document.getElementById("start-color-random-toggle");
@@ -258,11 +303,13 @@ function cacheDomElements() {
   ui.iterationRateValue = document.getElementById("iteration-rate-value");
   ui.boundarySearchDepthSlider = document.getElementById("boundary-search-depth-slider");
   ui.boundarySearchDepthValue = document.getElementById("boundary-search-depth-value");
+  ui.powerRangeControl = document.getElementById("power-range-control");
   ui.powerMinSlider = document.getElementById("power-min-slider");
   ui.powerMaxSlider = document.getElementById("power-max-slider");
   ui.powerRangeValue = document.getElementById("power-range-value");
   ui.powerRangeFill = document.getElementById("power-range-fill");
   ui.resolutionPresetSelect = document.getElementById("resolution-preset-select");
+  ui.showButtonsToggle = document.getElementById("show-buttons-toggle");
   ui.newSceneButton = document.getElementById("new-scene-button");
   ui.resetSettingsButton = document.getElementById("reset-settings-button");
 }
@@ -282,6 +329,10 @@ function initializeMenuUi() {
 
   setupMenuEvents();
   setupDrawerInteractions();
+  setupPowerRangeTrackInteraction();
+  setupInfoButtonInteractions();
+  refreshHudVisibility();
+  syncSceneControlButtons();
 }
 
 function setupMenuEvents() {
@@ -293,6 +344,10 @@ function setupMenuEvents() {
 
   ui.paletteCycleSlider.addEventListener("input", () => {
     updateRuntimeSettings({ paletteCycleLength: Number(ui.paletteCycleSlider.value) });
+  });
+
+  ui.smoothColorsToggle.addEventListener("change", () => {
+    updateRuntimeSettings({ smoothColors: ui.smoothColorsToggle.checked });
   });
 
   ui.colorIncrementCurveSlider.addEventListener("input", () => {
@@ -342,12 +397,37 @@ function setupMenuEvents() {
     updateRuntimeSettings({ renderScale: Number(ui.resolutionPresetSelect.value) });
   });
 
+  ui.showButtonsToggle.addEventListener("change", () => {
+    updateRuntimeSettings({ showButtons: ui.showButtonsToggle.checked });
+  });
+
   ui.newSceneButton.addEventListener("click", () => {
     requestSceneRefreshNow();
   });
 
   ui.resetSettingsButton.addEventListener("click", () => {
-    updateRuntimeSettings({ ...DEFAULT_RUNTIME_SETTINGS });
+    resetAllSettings();
+  });
+
+  if (menuPeekButton) {
+    menuPeekButton.addEventListener("click", () => setDrawerOpen(true, true));
+    menuPeekButton.addEventListener("pointerdown", (event) => {
+      if (drawerOpen) {
+        return;
+      }
+      beginDrawerDrag(event, "open");
+    });
+  }
+
+  ui.saveFrameButton?.addEventListener("click", saveCurrentFrame);
+  ui.pauseSceneButton?.addEventListener("click", () => {
+    setScenePaused(!scenePaused);
+  });
+  ui.holdSceneButton?.addEventListener("click", () => {
+    setSceneHeld(!sceneHeld);
+  });
+  ui.hudNewSceneButton?.addEventListener("click", () => {
+    requestSceneRefreshNow();
   });
 }
 
@@ -466,30 +546,51 @@ function applyDrawerProgress(progress, animate) {
   drawerProgress = clampNumber(progress, 0, 1);
 
   settingsDrawer.style.transition = animate ? "transform 220ms ease" : "none";
-  menuOverlay.style.transition = animate ? "opacity 220ms ease" : "none";
+  menuOverlay.style.transition = animate ? "opacity 220ms ease, visibility 220ms ease" : "none";
 
   const translatePct = -100 + drawerProgress * 100;
   settingsDrawer.style.transform = `translateX(${translatePct}%)`;
 
   if (drawerProgress <= 0.001) {
-    menuOverlay.hidden = true;
     menuOverlay.style.opacity = "0";
     menuOverlay.style.pointerEvents = "none";
+    menuOverlay.style.visibility = "hidden";
     settingsDrawer.setAttribute("aria-hidden", "true");
+    settingsDrawer.style.visibility = "hidden";
+    settingsDrawer.style.pointerEvents = "none";
   } else {
-    menuOverlay.hidden = false;
-    menuOverlay.style.opacity = "0";
+    menuOverlay.style.visibility = "visible";
+    menuOverlay.style.opacity = `${0.95 * drawerProgress}`;
     menuOverlay.style.pointerEvents = "auto";
     settingsDrawer.setAttribute("aria-hidden", "false");
+    settingsDrawer.style.visibility = "visible";
+    settingsDrawer.style.pointerEvents = "auto";
   }
+
+  refreshHudVisibility();
 }
 
 function updateRuntimeSettings(partial) {
   const previous = runtimeSettings;
-  const merged = normalizeRuntimeSettings({ ...runtimeSettings, ...partial });
+  settingsStore = storeCurrentRuntimeSettings(settingsStore, runtimeSettings);
 
-  runtimeSettings = merged;
-  persistRuntimeSettings(runtimeSettings);
+  const requestedPaletteId = typeof partial.paletteId === "string" ? partial.paletteId : runtimeSettings.paletteId;
+  const nextPaletteId = getPaletteById(requestedPaletteId) ? requestedPaletteId : runtimeSettings.paletteId;
+
+  settingsStore.selectedPaletteId = nextPaletteId;
+  settingsStore.globalSettings = normalizeGlobalSettings({
+    ...settingsStore.globalSettings,
+    ...extractSettingsSubset(partial, GLOBAL_SETTING_KEYS)
+  });
+
+  const currentProfile = settingsStore.paletteProfiles[nextPaletteId] || extractPaletteScopedSettings(DEFAULT_RUNTIME_SETTINGS);
+  settingsStore.paletteProfiles[nextPaletteId] = normalizePaletteProfile({
+    ...currentProfile,
+    ...extractSettingsSubset(partial, PALETTE_SCOPED_SETTING_KEYS)
+  });
+
+  runtimeSettings = buildRuntimeSettingsFromStore(settingsStore);
+  persistSettingsStore(settingsStore);
   applySettingsToUi();
   applyImmediateSettings(previous, runtimeSettings);
   pickerSettingsPending = !arePickerSettingsEqual(runtimeSettings, activeSettings);
@@ -507,10 +608,17 @@ function applyImmediateSettings(previous, next) {
   if (previous.paletteId !== next.paletteId) {
     activeSettings.paletteId = next.paletteId;
     setActivePalette(next.paletteId);
+    if (next.startColorMode === "random") {
+      sceneStartColorPhase = Math.random();
+    }
   }
 
   if (previous.paletteCycleLength !== next.paletteCycleLength) {
     activeSettings.paletteCycleLength = next.paletteCycleLength;
+  }
+
+  if (previous.smoothColors !== next.smoothColors) {
+    activeSettings.smoothColors = next.smoothColors;
   }
 
   if (previous.colorIncrementCurve !== next.colorIncrementCurve) {
@@ -548,11 +656,20 @@ function applyImmediateSettings(previous, next) {
       previous.sceneSwitchLimit !== next.sceneSwitchLimit
     )
   ) {
-    refreshRequested = hasReachedSceneLengthLimit();
+    if (!sceneHeld && hasReachedSceneLengthLimit()) {
+      requestSceneRefresh(SCENE_REFRESH_AUTO);
+    } else if (refreshRequestKind === SCENE_REFRESH_AUTO) {
+      clearSceneRefreshRequest();
+    }
   }
 
   if (previous.iterationRate !== next.iterationRate) {
     activeSettings.iterationRate = next.iterationRate;
+  }
+
+  if (previous.showButtons !== next.showButtons) {
+    activeSettings.showButtons = next.showButtons;
+    refreshHudVisibility();
   }
 
   if (previous.renderScale !== next.renderScale) {
@@ -588,6 +705,8 @@ function applySettingsToUi() {
   ui.paletteCycleSlider.value = String(runtimeSettings.paletteCycleLength);
   ui.paletteCycleValue.textContent = `${runtimeSettings.paletteCycleLength.toFixed(1)}`;
 
+  ui.smoothColorsToggle.checked = runtimeSettings.smoothColors;
+
   ui.colorIncrementCurveSlider.value = String(runtimeSettings.colorIncrementCurve);
   ui.colorIncrementCurveValue.textContent = formatColorIncrementCurveValue(runtimeSettings.colorIncrementCurve);
 
@@ -615,6 +734,8 @@ function applySettingsToUi() {
   refreshPowerRangeFill();
 
   ui.resolutionPresetSelect.value = String(runtimeSettings.renderScale);
+  ui.showButtonsToggle.checked = runtimeSettings.showButtons;
+  refreshHudVisibility();
 }
 
 function updateStartColorSliderGradient() {
@@ -664,8 +785,164 @@ function refreshSceneSwitchSliderBounds() {
   ui.sceneSwitchLimitSlider.step = String(range.step);
 }
 
+function setupPowerRangeTrackInteraction() {
+  if (!ui.powerRangeControl) {
+    return;
+  }
+
+  ui.powerRangeControl.addEventListener("pointerdown", (event) => {
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+
+    if (event.target === ui.powerMinSlider || event.target === ui.powerMaxSlider) {
+      return;
+    }
+
+    const rect = ui.powerRangeControl.getBoundingClientRect();
+    const ratio = clampNumber((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+    const snappedValue = clampNumber(Math.round(MIN_POWER + ratio * (MAX_POWER - MIN_POWER)), MIN_POWER, MAX_POWER);
+
+    if (Math.abs(snappedValue - runtimeSettings.powerMin) <= Math.abs(snappedValue - runtimeSettings.powerMax)) {
+      updateRuntimeSettings({
+        powerMin: snappedValue,
+        powerMax: Math.max(snappedValue, runtimeSettings.powerMax)
+      });
+    } else {
+      updateRuntimeSettings({
+        powerMin: Math.min(snappedValue, runtimeSettings.powerMin),
+        powerMax: snappedValue
+      });
+    }
+
+    event.preventDefault();
+  });
+}
+
+function focusElementWithoutScroll(element) {
+  if (!element || typeof element.focus !== "function") {
+    return;
+  }
+
+  try {
+    element.focus({ preventScroll: true });
+  } catch (_) {
+    element.focus();
+  }
+}
+
+function setupInfoButtonInteractions() {
+  const infoButtons = document.querySelectorAll(".info-button");
+  for (const button of infoButtons) {
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      focusElementWithoutScroll(button);
+    });
+
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      focusElementWithoutScroll(button);
+    });
+  }
+}
+
+function refreshHudVisibility() {
+  const showButtons = runtimeSettings.showButtons !== false;
+  const hidePeek = !showButtons || drawerProgress > 0.001;
+
+  if (menuPeekButton) {
+    menuPeekButton.classList.toggle("is-hidden", hidePeek);
+  }
+
+  if (ui.sceneHud) {
+    ui.sceneHud.classList.toggle("is-hidden", !showButtons);
+  }
+}
+
+function syncSceneControlButtons() {
+  if (ui.pauseSceneButton && ui.pauseSceneLabel) {
+    ui.pauseSceneButton.setAttribute("aria-pressed", scenePaused ? "true" : "false");
+    ui.pauseSceneButton.setAttribute("aria-label", scenePaused ? "Resume scene" : "Pause scene");
+    ui.pauseSceneButton.title = scenePaused ? "Resume scene" : "Pause scene";
+    ui.pauseSceneLabel.textContent = scenePaused ? "Resume" : "Pause";
+  }
+
+  if (ui.holdSceneButton) {
+    ui.holdSceneButton.setAttribute("aria-pressed", sceneHeld ? "true" : "false");
+    ui.holdSceneButton.setAttribute(
+      "aria-label",
+      sceneHeld ? "Allow scene switching" : "Stay on current scene"
+    );
+    ui.holdSceneButton.title = sceneHeld ? "Allow scene switching" : "Stay on current scene";
+  }
+}
+
+function setScenePaused(isPaused) {
+  scenePaused = Boolean(isPaused);
+  if (!scenePaused) {
+    lastFrameTimeMs = performance.now();
+  }
+  syncSceneControlButtons();
+}
+
+function setSceneHeld(isHeld) {
+  sceneHeld = Boolean(isHeld);
+
+  if (sceneHeld && refreshRequestKind === SCENE_REFRESH_AUTO) {
+    clearSceneRefreshRequest();
+  } else if (!sceneHeld && sceneActive && hasReachedSceneLengthLimit()) {
+    requestSceneRefresh(SCENE_REFRESH_AUTO);
+  }
+
+  syncSceneControlButtons();
+}
+
+function buildFrameFilename() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `mandelbrot-frame-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`;
+}
+
+function saveCurrentFrame() {
+  if (!canvas) {
+    return;
+  }
+
+  if (typeof canvas.toBlob === "function") {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = buildFrameFilename();
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, "image/png");
+    return;
+  }
+
+  const link = document.createElement("a");
+  link.href = canvas.toDataURL("image/png");
+  link.download = buildFrameFilename();
+  link.click();
+}
+
+function resetAllSettings() {
+  const previous = runtimeSettings;
+  settingsStore = buildDefaultSettingsStore();
+  runtimeSettings = buildRuntimeSettingsFromStore(settingsStore);
+  persistSettingsStore(settingsStore);
+  applySettingsToUi();
+  applyImmediateSettings(previous, runtimeSettings);
+  pickerSettingsPending = !arePickerSettingsEqual(runtimeSettings, activeSettings);
+}
+
 function getSceneSwitchRange(mode) {
-  return SCENE_SWITCH_LIMITS[mode] || SCENE_SWITCH_LIMITS[SCENE_SWITCH_MODE_FRAMES];
+  return SCENE_SWITCH_LIMITS[mode] || SCENE_SWITCH_LIMITS[DEFAULT_RUNTIME_SETTINGS.sceneSwitchMode];
 }
 
 function formatColorIncrementCurveValue(value) {
@@ -688,34 +965,162 @@ function formatSceneLengthValue(mode, value) {
   return `${Math.round(value)} frames`;
 }
 
-function loadRuntimeSettings() {
-  try {
-    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!raw) {
-      return normalizeRuntimeSettings(DEFAULT_RUNTIME_SETTINGS);
-    }
-
-    const parsed = JSON.parse(raw);
-    if (!parsed || parsed.version !== SETTINGS_SCHEMA_VERSION || typeof parsed.settings !== "object") {
-      return normalizeRuntimeSettings(DEFAULT_RUNTIME_SETTINGS);
-    }
-
-    return normalizeRuntimeSettings(parsed.settings);
-  } catch (_) {
-    return normalizeRuntimeSettings(DEFAULT_RUNTIME_SETTINGS);
+function extractSettingsSubset(source, keys) {
+  const subset = {};
+  if (!source || typeof source !== "object") {
+    return subset;
   }
+
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      subset[key] = source[key];
+    }
+  }
+  return subset;
 }
 
-function persistRuntimeSettings(settings) {
+function extractPaletteScopedSettings(source) {
+  return extractSettingsSubset(source, PALETTE_SCOPED_SETTING_KEYS);
+}
+
+function extractGlobalSettings(source) {
+  return extractSettingsSubset(source, GLOBAL_SETTING_KEYS);
+}
+
+function normalizePaletteProfile(input) {
+  const normalized = normalizeRuntimeSettings({
+    ...DEFAULT_RUNTIME_SETTINGS,
+    ...(input || {})
+  });
+  return extractPaletteScopedSettings(normalized);
+}
+
+function normalizeGlobalSettings(input) {
+  const normalized = normalizeRuntimeSettings({
+    ...DEFAULT_RUNTIME_SETTINGS,
+    ...(input || {})
+  });
+  return extractGlobalSettings(normalized);
+}
+
+function buildDefaultSettingsStore() {
+  return {
+    version: SETTINGS_SCHEMA_VERSION,
+    selectedPaletteId: DEFAULT_RUNTIME_SETTINGS.paletteId,
+    globalSettings: extractGlobalSettings(DEFAULT_RUNTIME_SETTINGS),
+    paletteProfiles: {
+      [DEFAULT_RUNTIME_SETTINGS.paletteId]: extractPaletteScopedSettings(DEFAULT_RUNTIME_SETTINGS)
+    }
+  };
+}
+
+function normalizeSettingsStore(input) {
+  const defaults = buildDefaultSettingsStore();
+  const paletteIds = new Set(PALETTE_OPTIONS.map((palette) => palette.id));
+  const selectedPaletteId = paletteIds.has(input?.selectedPaletteId)
+    ? input.selectedPaletteId
+    : defaults.selectedPaletteId;
+
+  const rawProfiles = input && typeof input.paletteProfiles === "object" ? input.paletteProfiles : {};
+  const paletteProfiles = {};
+
+  for (const palette of PALETTE_OPTIONS) {
+    const rawProfile = rawProfiles[palette.id];
+    if (rawProfile && typeof rawProfile === "object") {
+      paletteProfiles[palette.id] = normalizePaletteProfile(rawProfile);
+    }
+  }
+
+  if (!paletteProfiles[selectedPaletteId]) {
+    paletteProfiles[selectedPaletteId] = extractPaletteScopedSettings(DEFAULT_RUNTIME_SETTINGS);
+  }
+
+  return {
+    version: SETTINGS_SCHEMA_VERSION,
+    selectedPaletteId,
+    globalSettings: normalizeGlobalSettings({
+      ...defaults.globalSettings,
+      ...(input && typeof input.globalSettings === "object" ? input.globalSettings : {})
+    }),
+    paletteProfiles
+  };
+}
+
+function migrateLegacySettings(parsed) {
+  const legacySettings = normalizeRuntimeSettings(parsed.settings);
+  return normalizeSettingsStore({
+    selectedPaletteId: legacySettings.paletteId,
+    globalSettings: extractGlobalSettings(legacySettings),
+    paletteProfiles: {
+      [legacySettings.paletteId]: extractPaletteScopedSettings(legacySettings)
+    }
+  });
+}
+
+function loadSettingsStore() {
   try {
-    const payload = {
-      version: SETTINGS_SCHEMA_VERSION,
-      settings
-    };
-    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(payload));
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        parsed.version === SETTINGS_SCHEMA_VERSION &&
+        typeof parsed.globalSettings === "object"
+      ) {
+        return normalizeSettingsStore(parsed);
+      }
+    }
+
+    const legacyRaw = localStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY);
+    if (legacyRaw) {
+      const legacyParsed = JSON.parse(legacyRaw);
+      if (
+        legacyParsed &&
+        legacyParsed.version === 1 &&
+        typeof legacyParsed.settings === "object"
+      ) {
+        return migrateLegacySettings(legacyParsed);
+      }
+    }
   } catch (_) {
     // Ignore storage failures.
   }
+
+  return buildDefaultSettingsStore();
+}
+
+function persistSettingsStore(store) {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(normalizeSettingsStore(store)));
+  } catch (_) {
+    // Ignore storage failures.
+  }
+}
+
+function buildRuntimeSettingsFromStore(store) {
+  const normalizedStore = normalizeSettingsStore(store);
+  const selectedPaletteId = normalizedStore.selectedPaletteId;
+  const paletteProfile =
+    normalizedStore.paletteProfiles[selectedPaletteId] ||
+    extractPaletteScopedSettings(DEFAULT_RUNTIME_SETTINGS);
+
+  return normalizeRuntimeSettings({
+    ...DEFAULT_RUNTIME_SETTINGS,
+    ...normalizedStore.globalSettings,
+    ...paletteProfile,
+    paletteId: selectedPaletteId
+  });
+}
+
+function storeCurrentRuntimeSettings(store, settings) {
+  const nextStore = normalizeSettingsStore(store);
+  nextStore.selectedPaletteId = settings.paletteId;
+  nextStore.globalSettings = normalizeGlobalSettings({
+    ...nextStore.globalSettings,
+    ...extractGlobalSettings(settings)
+  });
+  nextStore.paletteProfiles[settings.paletteId] = normalizePaletteProfile(settings);
+  return nextStore;
 }
 
 function normalizeRuntimeSettings(input) {
@@ -731,6 +1136,7 @@ function normalizeRuntimeSettings(input) {
 
   next.startColorMode = next.startColorMode === "manual" ? "manual" : "random";
   next.startColorPhase = clampNumber(Number(next.startColorPhase), 0, 1);
+  next.smoothColors = next.smoothColors !== false;
 
   const mode = typeof next.sceneSwitchMode === "string" ? next.sceneSwitchMode : DEFAULT_RUNTIME_SETTINGS.sceneSwitchMode;
   next.sceneSwitchMode = SCENE_SWITCH_LIMITS[mode] ? mode : DEFAULT_RUNTIME_SETTINGS.sceneSwitchMode;
@@ -743,7 +1149,7 @@ function normalizeRuntimeSettings(input) {
     next.sceneSwitchLimit = Math.round(next.sceneSwitchLimit);
   }
 
-  next.iterationRate = clampNumber(Math.round(Number(next.iterationRate) || 0), 1, 360);
+  next.iterationRate = clampNumber(Math.round(Number(next.iterationRate) || 0), MIN_ITERATION_RATE, MAX_ITERATION_RATE);
 
   next.boundarySearchDepth = clampNumber(Math.round(Number(next.boundarySearchDepth) || 0), 4, 36);
 
@@ -756,6 +1162,7 @@ function normalizeRuntimeSettings(input) {
   }
   next.powerMin = powerMin;
   next.powerMax = powerMax;
+  next.showButtons = next.showButtons !== false;
 
   return next;
 }
@@ -878,13 +1285,10 @@ function createPrograms() {
 
       if (mag2 >= 4.0) {
         float zMag = sqrt(mag2);
-        float smoothResidual = clamp(-(log(log(zMag)) / uLogPower), 0.0, 1.0);
-        float escapedPhase = (uIterationPhase - 1.0) + smoothResidual;
-        if (uIterationPhase <= 1.0) {
-          escapedPhase = 0.0;
-        }
+        float smoothEscape = max(0.0, uIterationPhase - (log(log(zMag)) / uLogPower));
+        float discreteEscape = max(0.0, uIterationPhase);
 
-        outState = vec2(escapedPhase, 0.0);
+        outState = vec2(smoothEscape, discreteEscape);
         outColor = vec4(0.0, 0.0, 0.0, 1.0);
         outDelta = vec4(1.0, 0.0, 0.0, 1.0);
       } else {
@@ -907,6 +1311,7 @@ function createPrograms() {
     uniform sampler2D uPalette;
     uniform float uPaletteCycleLength;
     uniform float uColorIncrementCurve;
+    uniform bool uSmoothColors;
     uniform float uStartColorPhase;
     uniform vec2 uSimSize;
     uniform float uPixelSize;
@@ -921,13 +1326,14 @@ function createPrograms() {
     float mapEscapedPhase(float escapedPhase) {
       float n = max(0.0, escapedPhase);
       float c = clamp(uColorIncrementCurve, 0.0, 1.0);
+      float transformedC = c <= 0.0 ? 0.0 : pow(c, ${COLOR_CURVE_EXPONENT.toFixed(12)});
+      float oneMinusCurve = 1.0 - transformedC;
 
-      if (c >= 0.9995) {
+      if (abs(oneMinusCurve) <= 1.0e-4) {
         return log(n + 1.0);
       }
 
-      float oneMinusC = 1.0 - c;
-      return (pow(n + 1.0, oneMinusC) - 1.0) / oneMinusC;
+      return max(0.0, (pow(n + 1.0, oneMinusCurve) - 1.0) / oneMinusCurve);
     }
 
     void main() {
@@ -938,7 +1344,8 @@ function createPrograms() {
         return;
       }
 
-      float escapedPhase = texelFetch(uState, texel, 0).r;
+      vec2 escapedState = texelFetch(uState, texel, 0).rg;
+      float escapedPhase = uSmoothColors ? escapedState.r : escapedState.g;
       float adjustedPhase = mapEscapedPhase(escapedPhase);
       float paletteT = fract(uStartColorPhase + adjustedPhase / uPaletteCycleLength);
 
@@ -1033,6 +1440,7 @@ function createPrograms() {
     palette: gl.getUniformLocation(displayProgram, "uPalette"),
     paletteCycleLength: gl.getUniformLocation(displayProgram, "uPaletteCycleLength"),
     colorIncrementCurve: gl.getUniformLocation(displayProgram, "uColorIncrementCurve"),
+    smoothColors: gl.getUniformLocation(displayProgram, "uSmoothColors"),
     startColorPhase: gl.getUniformLocation(displayProgram, "uStartColorPhase"),
     simSize: gl.getUniformLocation(displayProgram, "uSimSize"),
     pixelSize: gl.getUniformLocation(displayProgram, "uPixelSize"),
@@ -1468,7 +1876,8 @@ function handleResize(forceRecreate) {
   sceneActive = false;
   pendingScene = null;
   sceneJustReset = false;
-  refreshRequested = false;
+  scenePreparation = null;
+  clearSceneRefreshRequest();
 
   sceneElapsedFrames = 0;
   sceneElapsedIterations = 0;
@@ -1611,7 +2020,7 @@ function applyScene(scene) {
   sceneElapsedSeconds = 0;
   iterationAccumulator = 0;
 
-  refreshRequested = false;
+  clearSceneRefreshRequest();
   sceneJustReset = true;
 
   let preIterEstimate = Math.max(0, scene.preIter | 0);
@@ -1620,7 +2029,7 @@ function applyScene(scene) {
   }
 
   clearSimulationTextures();
-  prepareSceneStateForFirstVisibleColor(preIterEstimate);
+  scenePreparation = createScenePreparation(preIterEstimate);
   sceneActive = true;
 }
 
@@ -2001,25 +2410,66 @@ function sampleTextureSum(sourceTexture) {
   return sum;
 }
 
-function prepareSceneStateForFirstVisibleColor(preIterEstimate) {
-  const preloadIters = Math.min(
-    SCENE_PREP_MAX_ITERS,
-    Math.max(0, preIterEstimate - PREITER_SAFETY_MARGIN)
-  );
+function createScenePreparation(preIterEstimate) {
+  return {
+    remainingStateOnlyPasses: Math.min(
+      SCENE_PREP_MAX_ITERS,
+      Math.max(0, preIterEstimate - PREITER_SAFETY_MARGIN)
+    ),
+    updatePasses: 0,
+    updatePassesSinceCoverageCheck: 0
+  };
+}
 
-  for (let i = 0; i < preloadIters; i += 1) {
-    runStateOnlyPass();
+function runScenePreparationStep() {
+  if (!scenePreparation) {
+    return true;
   }
 
-  for (let i = preloadIters; i < SCENE_PREP_MAX_ITERS; i += 1) {
+  const startMs = performance.now();
+  let passesRun = 0;
+
+  while (
+    scenePreparation &&
+    passesRun < SCENE_PREP_MAX_PASSES_PER_FRAME &&
+    performance.now() - startMs < SCENE_PREP_TIME_BUDGET_MS
+  ) {
+    if (scenePreparation.remainingStateOnlyPasses > 0) {
+      const batchSize = Math.min(8, scenePreparation.remainingStateOnlyPasses);
+      for (let i = 0; i < batchSize; i += 1) {
+        runStateOnlyPass();
+      }
+      scenePreparation.remainingStateOnlyPasses -= batchSize;
+      passesRun += batchSize;
+      continue;
+    }
+
     runUpdatePass();
     advanceSceneIteration(1);
-    if (estimateColorCoverage() > 0) {
+    scenePreparation.updatePasses += 1;
+    scenePreparation.updatePassesSinceCoverageCheck += 1;
+    passesRun += 1;
+
+    const shouldCheckCoverage =
+      scenePreparation.updatePasses === 1 ||
+      scenePreparation.updatePassesSinceCoverageCheck >= SCENE_PREP_COVERAGE_CHECK_INTERVAL ||
+      scenePreparation.updatePasses >= SCENE_PREP_MAX_ITERS;
+
+    if (!shouldCheckCoverage) {
+      continue;
+    }
+
+    scenePreparation.updatePassesSinceCoverageCheck = 0;
+    if (
+      scenePreparation.updatePasses >= SCENE_PREP_MAX_ITERS ||
+      estimateColorCoverage() > 0
+    ) {
+      scenePreparation = null;
       return true;
     }
   }
 
-  return estimateColorCoverage() > 0;
+  return !scenePreparation;
 }
 
 function drawToScreen() {
@@ -2045,6 +2495,7 @@ function drawToScreen() {
 
   gl.uniform1f(displayUniforms.paletteCycleLength, activeSettings.paletteCycleLength);
   gl.uniform1f(displayUniforms.colorIncrementCurve, activeSettings.colorIncrementCurve);
+  gl.uniform1i(displayUniforms.smoothColors, activeSettings.smoothColors ? 1 : 0);
   gl.uniform1f(displayUniforms.startColorPhase, sceneStartColorPhase);
   gl.uniform2f(displayUniforms.simSize, simCols, simRows);
   gl.uniform1f(displayUniforms.pixelSize, displayPixelSize);
@@ -2059,10 +2510,27 @@ function clearScreen() {
   gl.clear(gl.COLOR_BUFFER_BIT);
 }
 
-function requestSceneRefreshNow() {
+function clearSceneRefreshRequest() {
+  refreshRequested = false;
+  refreshRequestKind = SCENE_REFRESH_NONE;
+}
+
+function requestSceneRefresh(kind) {
+  const nextKind = kind === SCENE_REFRESH_MANUAL ? SCENE_REFRESH_MANUAL : SCENE_REFRESH_AUTO;
+  if (nextKind === SCENE_REFRESH_AUTO && sceneHeld) {
+    return;
+  }
+
   refreshRequested = true;
-  requestPick();
+  if (nextKind === SCENE_REFRESH_MANUAL || refreshRequestKind !== SCENE_REFRESH_MANUAL) {
+    refreshRequestKind = nextKind;
+  }
+
   ensureNextPickReady();
+}
+
+function requestSceneRefreshNow() {
+  requestSceneRefresh(SCENE_REFRESH_MANUAL);
 }
 
 function ensureNextPickReady() {
@@ -2102,6 +2570,7 @@ function renderLoop(timeMs) {
 
   const deltaSeconds = Math.min(0.25, Math.max(0, (timeMs - lastFrameTimeMs) / 1000));
   lastFrameTimeMs = timeMs;
+  const canSwapToPendingScene = !scenePaused || refreshRequestKind === SCENE_REFRESH_MANUAL;
 
   if (!sceneActive) {
     activatePendingPickerSettingsIfNeeded();
@@ -2112,6 +2581,7 @@ function renderLoop(timeMs) {
       applyScene(nextScene);
       requestPick();
       drawToScreen();
+      lastFrameTimeMs = performance.now();
       sceneJustReset = false;
     } else {
       clearScreen();
@@ -2124,12 +2594,13 @@ function renderLoop(timeMs) {
     activatePendingPickerSettingsIfNeeded();
   }
 
-  if (refreshRequested && pendingScene) {
+  if (refreshRequested && pendingScene && canSwapToPendingScene) {
     const nextScene = pendingScene;
     pendingScene = null;
     applyScene(nextScene);
     requestPick();
     drawToScreen();
+    lastFrameTimeMs = performance.now();
     sceneJustReset = false;
     return;
   }
@@ -2140,10 +2611,26 @@ function renderLoop(timeMs) {
     return;
   }
 
+  if (scenePaused) {
+    drawToScreen();
+    return;
+  }
+
+  if (scenePreparation) {
+    runScenePreparationStep();
+    drawToScreen();
+    iterationAccumulator = 0;
+    lastFrameTimeMs = performance.now();
+    return;
+  }
+
   sceneElapsedFrames += 1;
   sceneElapsedSeconds += deltaSeconds;
 
-  iterationAccumulator += activeSettings.iterationRate * deltaSeconds;
+  iterationAccumulator = Math.min(
+    MAX_UPDATE_PASSES_PER_FRAME * 2,
+    iterationAccumulator + activeSettings.iterationRate * deltaSeconds
+  );
   const updatesToRun = Math.min(MAX_UPDATE_PASSES_PER_FRAME, Math.floor(iterationAccumulator));
 
   if (updatesToRun > 0) {
@@ -2157,8 +2644,8 @@ function renderLoop(timeMs) {
 
   drawToScreen();
 
-  if (hasReachedSceneLengthLimit()) {
-    refreshRequested = true;
+  if (!sceneHeld && hasReachedSceneLengthLimit()) {
+    requestSceneRefresh(SCENE_REFRESH_AUTO);
   }
 
   if (refreshRequested) {

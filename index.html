@@ -9,83 +9,161 @@
 <body>
   <canvas id="fractal" aria-label="Animated Mandelbrot background"></canvas>
   <div id="menu-edge-zone" aria-hidden="true"></div>
-  <div id="menu-overlay" hidden></div>
+  <div id="menu-overlay"></div>
+
+  <button id="menu-peek-button" type="button" aria-label="Open settings" title="Open settings">
+    <span class="menu-peek-chevron" aria-hidden="true"></span>
+  </button>
+
+  <div id="scene-hud" aria-label="Scene controls">
+    <button id="save-frame-button" class="hud-button" type="button" aria-label="Save current frame" title="Save current frame">
+      <svg class="hud-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 3v10"></path>
+        <path d="M8 9l4 4 4-4"></path>
+        <path d="M5 16v3h14v-3"></path>
+      </svg>
+      <span class="hud-button-label">Save</span>
+    </button>
+    <button id="pause-scene-button" class="hud-button" type="button" aria-label="Pause scene" aria-pressed="false" title="Pause scene">
+      <svg class="hud-icon hud-icon-pause" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 5v14"></path>
+        <path d="M15 5v14"></path>
+      </svg>
+      <svg class="hud-icon hud-icon-play" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 6l9 6-9 6z"></path>
+      </svg>
+      <span id="pause-scene-label" class="hud-button-label">Pause</span>
+    </button>
+    <button id="hold-scene-button" class="hud-button" type="button" aria-label="Stay on current scene" aria-pressed="false" title="Stay on current scene">
+      <svg class="hud-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="16.5" cy="6.5" r="3"></circle>
+        <path d="M14 9L5.5 17.5"></path>
+        <path d="M11.5 6.5l5 5"></path>
+      </svg>
+      <span class="hud-button-label">Stay</span>
+    </button>
+    <button id="hud-new-scene-button" class="hud-button" type="button" aria-label="Generate new scene" title="Generate new scene">
+      <svg class="hud-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M17 6A8 8 0 1112 4"></path>
+        <path d="M8.5 1L12 4 8.5 7"></path>
+      </svg>
+      <span class="hud-button-label">New</span>
+    </button>
+  </div>
 
   <aside id="settings-drawer" aria-label="Fractal settings" aria-hidden="true">
     <header class="drawer-header">
       <h1>Mandelbrot Controls</h1>
-      <button id="menu-close-button" type="button" aria-label="Close settings">Close</button>
+      <button id="menu-close-button" type="button" aria-label="Close settings">
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+          <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
     </header>
 
     <div id="drawer-drag-handle" aria-hidden="true"></div>
 
     <section class="control-section">
       <h2>Color</h2>
-      <label for="palette-select">Palette</label>
+      <div class="label-row">
+        <label for="palette-select">Palette</label>
+        <button class="info-button" type="button" aria-label="About palette" data-info="Choose the overall color style.">i</button>
+      </div>
       <select id="palette-select"></select>
 
       <label class="toggle-row" for="start-color-random-toggle">
         <span>Random Start Color</span>
         <input id="start-color-random-toggle" type="checkbox" checked>
+        <button class="info-button" type="button" aria-label="About random start color" data-info="Start each new scene at a random place in the palette.">i</button>
       </label>
 
-      <label for="start-color-slider">
-        Start Color
-        <span id="start-color-value" class="value-label"></span>
-      </label>
+      <div class="label-row">
+        <label for="start-color-slider">Start Color</label>
+        <div class="label-side">
+          <span id="start-color-value" class="value-label"></span>
+          <button class="info-button" type="button" aria-label="About start color" data-info="Pick where the palette begins when random start is off.">i</button>
+        </div>
+      </div>
       <input id="start-color-slider" type="range" min="0" max="1" step="0.001">
 
-      <label for="palette-cycle-slider">
-        Palette Cycle Length
-        <span id="palette-cycle-value" class="value-label"></span>
-      </label>
+      <div class="label-row">
+        <label for="palette-cycle-slider">Palette Cycle Length</label>
+        <div class="label-side">
+          <span id="palette-cycle-value" class="value-label"></span>
+          <button class="info-button" type="button" aria-label="About palette cycle length" data-info="Lower values repeat colors faster. Higher values stretch them out.">i</button>
+        </div>
+      </div>
       <input id="palette-cycle-slider" type="range" min="20" max="5000" step="0.1">
 
-      <label for="color-increment-curve-slider">
-        Marginal Color Increment
-        <span id="color-increment-curve-value" class="value-label"></span>
-      </label>
+      <div class="label-row">
+        <label for="color-increment-curve-slider">Marginal Color Increment</label>
+        <div class="label-side">
+          <span id="color-increment-curve-value" class="value-label"></span>
+          <button class="info-button" type="button" aria-label="About marginal color increment" data-info="Left is even. Right pushes more color detail into later escape levels.">i</button>
+        </div>
+      </div>
       <input id="color-increment-curve-slider" type="range" min="0" max="1" step="0.001">
       <div class="range-end-labels" aria-hidden="true">
         <span>Linear</span>
         <span>Logarithmic</span>
       </div>
+
+      <label class="toggle-row" for="smooth-colors-toggle">
+        <span>Smooth Colors</span>
+        <input id="smooth-colors-toggle" type="checkbox" checked>
+        <button class="info-button" type="button" aria-label="About smooth colors" data-info="Blend between color bands so low cycle lengths still look continuous.">i</button>
+      </label>
     </section>
 
     <section class="control-section">
       <h2>Timing</h2>
-      <label for="scene-switch-mode">Scene Length Unit</label>
+      <div class="label-row">
+        <label for="scene-switch-mode">Scene Length Unit</label>
+        <button class="info-button" type="button" aria-label="About scene length unit" data-info="Measure scene time in seconds, frames, or iterations.">i</button>
+      </div>
       <select id="scene-switch-mode">
         <option value="seconds">Seconds</option>
         <option value="frames">Frames</option>
         <option value="iterations">Iterations</option>
       </select>
 
-      <label for="scene-switch-limit-slider">
-        Scene Length
-        <span id="scene-switch-limit-value" class="value-label"></span>
-      </label>
+      <div class="label-row">
+        <label for="scene-switch-limit-slider">Scene Length</label>
+        <div class="label-side">
+          <span id="scene-switch-limit-value" class="value-label"></span>
+          <button class="info-button" type="button" aria-label="About scene length" data-info="How long a scene stays on screen before switching.">i</button>
+        </div>
+      </div>
       <input id="scene-switch-limit-slider" type="range">
 
-      <label for="iteration-rate-slider">
-        Iterations Per Second
-        <span id="iteration-rate-value" class="value-label"></span>
-      </label>
-      <input id="iteration-rate-slider" type="range" min="1" max="360" step="1">
+      <div class="label-row">
+        <label for="iteration-rate-slider">Iterations Per Second</label>
+        <div class="label-side">
+          <span id="iteration-rate-value" class="value-label"></span>
+          <button class="info-button" type="button" aria-label="About iterations per second" data-info="How fast the fractal grows each second.">i</button>
+        </div>
+      </div>
+      <input id="iteration-rate-slider" type="range" min="15" max="720" step="1">
     </section>
 
     <section class="control-section">
-      <h2>Scene Picker</h2>
-      <label for="boundary-search-depth-slider">
-        Boundary Search Depth
-        <span id="boundary-search-depth-value" class="value-label"></span>
-      </label>
+      <h2>Scene</h2>
+      <div class="label-row">
+        <label for="boundary-search-depth-slider">Boundary Search Depth</label>
+        <div class="label-side">
+          <span id="boundary-search-depth-value" class="value-label"></span>
+          <button class="info-button" type="button" aria-label="About boundary search depth" data-info="Higher values usually find deeper, more dramatic scenes.">i</button>
+        </div>
+      </div>
       <input id="boundary-search-depth-slider" type="range" min="4" max="36" step="1">
 
-      <label>
-        Power Range
-        <span id="power-range-value" class="value-label"></span>
-      </label>
+      <div class="label-row">
+        <label>Power Range</label>
+        <div class="label-side">
+          <span id="power-range-value" class="value-label"></span>
+          <button class="info-button" type="button" aria-label="About power range" data-info="Choose which Mandelbrot power values new scenes can use.">i</button>
+        </div>
+      </div>
       <div class="dual-range" id="power-range-control">
         <div class="dual-range-track"></div>
         <div class="dual-range-fill" id="power-range-fill"></div>
@@ -95,21 +173,46 @@
     </section>
 
     <section class="control-section">
-      <h2>Quality</h2>
-      <label for="resolution-preset-select">Resolution Preset</label>
+      <h2>Screen</h2>
+      <div class="label-row">
+        <label for="resolution-preset-select">Resolution Quality</label>
+        <button class="info-button" type="button" aria-label="About resolution quality" data-info="Higher looks sharper. Lower is lighter on the GPU.">i</button>
+      </div>
       <select id="resolution-preset-select">
         <option value="1">High</option>
         <option value="1.5">Medium</option>
         <option value="2">Low</option>
         <option value="3">Very Low</option>
       </select>
+
+      <label class="toggle-row" for="show-buttons-toggle">
+        <span>Show Buttons</span>
+        <input id="show-buttons-toggle" type="checkbox" checked>
+        <button class="info-button" type="button" aria-label="About show buttons" data-info="Show the floating screen controls on top of the scene.">i</button>
+      </label>
     </section>
 
     <section class="control-section actions">
       <h2>Actions</h2>
-      <button id="new-scene-button" type="button">Generate New Scene</button>
-      <button id="reset-settings-button" type="button">Reset Settings</button>
+      <div class="action-row">
+        <button id="new-scene-button" type="button">Generate New Scene</button>
+        <button class="info-button" type="button" aria-label="About generate new scene" data-info="Switch to a fresh random scene right away.">i</button>
+      </div>
+      <div class="action-row">
+        <button id="reset-settings-button" type="button">Reset Settings</button>
+        <button class="info-button" type="button" aria-label="About reset settings" data-info="Restore the default look and timing.">i</button>
+      </div>
     </section>
+
+    <footer class="menu-footer">
+      <span>&copy; 2026 Peleg Michael</span>
+      <a href="https://github.com/peleg773/Madelbrot-background" target="_blank" rel="noreferrer noopener">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        GitHub
+      </a>
+    </footer>
   </aside>
 
   <div id="unsupported" role="alert" aria-live="polite"></div>

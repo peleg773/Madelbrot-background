@@ -10,7 +10,8 @@ Fullscreen animated Mandelbrot/Multibrot background ported from Processing.
 - Auto-picks deep boundary points for each scene.
 - Uses integer exponents (`2..8`) so scenes can be classic Mandelbrot (`power = 2`) or Multibrot (`power > 2`).
 - Includes a hidden slide-in settings menu from the left edge (desktop + mobile).
-- Persists user settings in localStorage (`mandelbrotBackground.settings.v1`).
+- Includes optional on-canvas controls for save, pause, stay-on-scene, and new scene actions.
+- Persists user settings in localStorage (`mandelbrotBackground.settings.v2`) with palette-specific color profiles.
 
 ## Tech
 - `index.html` + `styles.css` + `app.js`
@@ -37,19 +38,21 @@ Open by dragging from the left edge.
 
 - **Color**
   - Palette dropdown (cyclic palette set, default `HSV Classic`, includes `Wikipedia` gradient).
-  - Start color control with `Random` (default) or manual palette-position slider.
+  - Start color control with per-palette `Random` or manual palette-position memory.
   - Palette cycle length slider (maps to color-cycle period; old `MOD` concept).
-  - Marginal color increment slider (`0=Linear`, `1=Logarithmic`) using `((n+1)^(1-c)-1)/(1-c)` and `log(n+1)` at `c=1`.
+  - `Smooth Colors` toggle for continuous escape coloring.
+  - Marginal color increment slider using `(((n+1)^(1-c^d))-1)/(1-c^d)` with `d = log_0.5(0.21)`.
 - **Timing**
-  - Scene length mode: `seconds | frames | iterations`.
+  - Scene length mode: `seconds | frames | iterations` (default `seconds`).
   - Scene length slider (unit depends on selected mode).
-  - Iterations per second slider (frame-rate-independent speed control).
+  - Iterations per second slider (`15..720`) for frame-rate-independent speed control.
   - Scene switching is length-driven only (no coverage trigger).
-- **Scene Picker**
+- **Scene**
   - Boundary search depth slider.
   - Power range slider (`2..8`), sampled uniformly from the selected integer range.
-- **Quality**
-  - Resolution preset: `High=1.0`, `Medium=1.5`, `Low=2.0`, `Very Low=3.0` render scale.
+- **Screen**
+  - Resolution quality: `High=1.0`, `Medium=1.5`, `Low=2.0`, `Very Low=3.0` render scale.
+  - `Show Buttons` toggle for the floating scene HUD.
 - **Actions**
   - `Generate New Scene` button.
   - `Reset Settings` button.
