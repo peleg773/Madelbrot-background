@@ -92,6 +92,7 @@ const DEFAULT_RUNTIME_SETTINGS = Object.freeze({
   renderScale: 1,
   paletteId: "hsv-classic",
   paletteCycleLength: 200,
+  colorIncrementCurve: 0,
   startColorMode: "random",
   startColorPhase: 0,
   sceneSwitchMode: SCENE_SWITCH_MODE_FRAMES,
@@ -245,6 +246,8 @@ function cacheDomElements() {
   ui.paletteSelect = document.getElementById("palette-select");
   ui.paletteCycleSlider = document.getElementById("palette-cycle-slider");
   ui.paletteCycleValue = document.getElementById("palette-cycle-value");
+  ui.colorIncrementCurveSlider = document.getElementById("color-increment-curve-slider");
+  ui.colorIncrementCurveValue = document.getElementById("color-increment-curve-value");
   ui.startColorRandomToggle = document.getElementById("start-color-random-toggle");
   ui.startColorSlider = document.getElementById("start-color-slider");
   ui.startColorValue = document.getElementById("start-color-value");
@@ -290,6 +293,10 @@ function setupMenuEvents() {
 
   ui.paletteCycleSlider.addEventListener("input", () => {
     updateRuntimeSettings({ paletteCycleLength: Number(ui.paletteCycleSlider.value) });
+  });
+
+  ui.colorIncrementCurveSlider.addEventListener("input", () => {
+    updateRuntimeSettings({ colorIncrementCurve: Number(ui.colorIncrementCurveSlider.value) });
   });
 
   ui.startColorRandomToggle.addEventListener("change", () => {
@@ -506,6 +513,10 @@ function applyImmediateSettings(previous, next) {
     activeSettings.paletteCycleLength = next.paletteCycleLength;
   }
 
+  if (previous.colorIncrementCurve !== next.colorIncrementCurve) {
+    activeSettings.colorIncrementCurve = next.colorIncrementCurve;
+  }
+
   if (previous.startColorMode !== next.startColorMode) {
     activeSettings.startColorMode = next.startColorMode;
     if (next.startColorMode === "random") {
@@ -576,6 +587,9 @@ function applySettingsToUi() {
 
   ui.paletteCycleSlider.value = String(runtimeSettings.paletteCycleLength);
   ui.paletteCycleValue.textContent = `${runtimeSettings.paletteCycleLength.toFixed(1)}`;
+
+  ui.colorIncrementCurveSlider.value = String(runtimeSettings.colorIncrementCurve);
+  ui.colorIncrementCurveValue.textContent = formatColorIncrementCurveValue(runtimeSettings.colorIncrementCurve);
 
   ui.startColorRandomToggle.checked = runtimeSettings.startColorMode === "random";
   ui.startColorSlider.value = String(runtimeSettings.startColorPhase);
@@ -654,6 +668,16 @@ function getSceneSwitchRange(mode) {
   return SCENE_SWITCH_LIMITS[mode] || SCENE_SWITCH_LIMITS[SCENE_SWITCH_MODE_FRAMES];
 }
 
+function formatColorIncrementCurveValue(value) {
+  if (value <= 0.0005) {
+    return "Linear";
+  }
+  if (value >= 0.9995) {
+    return "Logarithmic";
+  }
+  return value.toFixed(3);
+}
+
 function formatSceneLengthValue(mode, value) {
   if (mode === SCENE_SWITCH_MODE_SECONDS) {
     return `${value.toFixed(1)} s`;
@@ -703,6 +727,7 @@ function normalizeRuntimeSettings(input) {
   next.paletteId = paletteIds.has(next.paletteId) ? next.paletteId : DEFAULT_RUNTIME_SETTINGS.paletteId;
 
   next.paletteCycleLength = clampNumber(Number(next.paletteCycleLength), 20, 5000);
+  next.colorIncrementCurve = clampNumber(Number(next.colorIncrementCurve), 0, 1);
 
   next.startColorMode = next.startColorMode === "manual" ? "manual" : "random";
   next.startColorPhase = clampNumber(Number(next.startColorPhase), 0, 1);
@@ -881,6 +906,7 @@ function createPrograms() {
     uniform sampler2D uMask;
     uniform sampler2D uPalette;
     uniform float uPaletteCycleLength;
+    uniform float uColorIncrementCurve;
     uniform float uStartColorPhase;
     uniform vec2 uSimSize;
     uniform float uPixelSize;
@@ -892,6 +918,18 @@ function createPrograms() {
       return ivec2(clamped);
     }
 
+    float mapEscapedPhase(float escapedPhase) {
+      float n = max(0.0, escapedPhase);
+      float c = clamp(uColorIncrementCurve, 0.0, 1.0);
+
+      if (c >= 0.9995) {
+        return log(n + 1.0);
+      }
+
+      float oneMinusC = 1.0 - c;
+      return (pow(n + 1.0, oneMinusC) - 1.0) / oneMinusC;
+    }
+
     void main() {
       ivec2 texel = getSimulationTexel();
       vec4 mask = texelFetch(uMask, texel, 0);
@@ -901,7 +939,8 @@ function createPrograms() {
       }
 
       float escapedPhase = texelFetch(uState, texel, 0).r;
-      float paletteT = fract(uStartColorPhase + escapedPhase / uPaletteCycleLength);
+      float adjustedPhase = mapEscapedPhase(escapedPhase);
+      float paletteT = fract(uStartColorPhase + adjustedPhase / uPaletteCycleLength);
 
       vec3 rgb = texture(uPalette, vec2(paletteT, 0.5)).rgb;
       outColor = vec4(rgb, 1.0);
@@ -993,6 +1032,7 @@ function createPrograms() {
     mask: gl.getUniformLocation(displayProgram, "uMask"),
     palette: gl.getUniformLocation(displayProgram, "uPalette"),
     paletteCycleLength: gl.getUniformLocation(displayProgram, "uPaletteCycleLength"),
+    colorIncrementCurve: gl.getUniformLocation(displayProgram, "uColorIncrementCurve"),
     startColorPhase: gl.getUniformLocation(displayProgram, "uStartColorPhase"),
     simSize: gl.getUniformLocation(displayProgram, "uSimSize"),
     pixelSize: gl.getUniformLocation(displayProgram, "uPixelSize"),
@@ -2004,6 +2044,7 @@ function drawToScreen() {
   gl.uniform1i(displayUniforms.palette, 2);
 
   gl.uniform1f(displayUniforms.paletteCycleLength, activeSettings.paletteCycleLength);
+  gl.uniform1f(displayUniforms.colorIncrementCurve, activeSettings.colorIncrementCurve);
   gl.uniform1f(displayUniforms.startColorPhase, sceneStartColorPhase);
   gl.uniform2f(displayUniforms.simSize, simCols, simRows);
   gl.uniform1f(displayUniforms.pixelSize, displayPixelSize);

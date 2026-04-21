@@ -24,12 +24,6 @@
       <label for="palette-select">Palette</label>
       <select id="palette-select"></select>
 
-      <label for="palette-cycle-slider">
-        Palette Cycle Length
-        <span id="palette-cycle-value" class="value-label"></span>
-      </label>
-      <input id="palette-cycle-slider" type="range" min="20" max="5000" step="0.1">
-
       <label class="toggle-row" for="start-color-random-toggle">
         <span>Random Start Color</span>
         <input id="start-color-random-toggle" type="checkbox" checked>
@@ -40,6 +34,22 @@
         <span id="start-color-value" class="value-label"></span>
       </label>
       <input id="start-color-slider" type="range" min="0" max="1" step="0.001">
+
+      <label for="palette-cycle-slider">
+        Palette Cycle Length
+        <span id="palette-cycle-value" class="value-label"></span>
+      </label>
+      <input id="palette-cycle-slider" type="range" min="20" max="5000" step="0.1">
+
+      <label for="color-increment-curve-slider">
+        Marginal Color Increment
+        <span id="color-increment-curve-value" class="value-label"></span>
+      </label>
+      <input id="color-increment-curve-slider" type="range" min="0" max="1" step="0.001">
+      <div class="range-end-labels" aria-hidden="true">
+        <span>Linear</span>
+        <span>Logarithmic</span>
+      </div>
     </section>
 
     <section class="control-section">
