@@ -9,6 +9,9 @@ const MAX_POWER = 8;
 const PREITER_MAX_ITERS = 2048;
 const PREITER_MAX_COLS = 320;
 const PREITER_MAX_ROWS = 180;
+const DEFAULT_SEARCH_ZOOM_FACTOR = 4.0;
+const MIN_SEARCH_ZOOM_FACTOR = 2.0;
+const MAX_SEARCH_ZOOM_FACTOR = 8.0;
 
 self.addEventListener("message", (event) => {
   const data = event.data;
@@ -24,6 +27,7 @@ self.addEventListener("message", (event) => {
       ? Number(data.simulationAspect)
       : viewportHeight / viewportWidth;
     const searchDepth = Math.max(1, data.searchDepth | 0);
+    const searchZoomFactor = clampNumber(Number(data.searchZoomFactor), MIN_SEARCH_ZOOM_FACTOR, MAX_SEARCH_ZOOM_FACTOR);
     const searchGridSize = Math.max(8, data.searchGridSize | 0);
     const simulationRows = Math.max(1, data.simulationRows | 0);
     const simulationCols = Math.max(1, data.simulationCols | 0);
@@ -35,6 +39,7 @@ self.addEventListener("message", (event) => {
     const point = findValidBoundaryPoint(
       simulationAspect,
       searchDepth,
+      searchZoomFactor,
       searchGridSize,
       minimumRadius,
       chosenPower
@@ -80,17 +85,19 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-function findValidBoundaryPoint(aspect, searchDepth, searchGridSize, minimumRadius, chosenPower) {
+function findValidBoundaryPoint(aspect, searchDepth, searchZoomFactor, searchGridSize, minimumRadius, chosenPower) {
   let fallback = null;
   let best = null;
   const requestedTargetRadius = minimumRadius * PICK_TARGET_RADIUS_FACTOR;
-  const achievableRadius = 1.25 / Math.pow(4, Math.max(1, searchDepth));
+  const zoomFactor = clampNumber(Number(searchZoomFactor), MIN_SEARCH_ZOOM_FACTOR, MAX_SEARCH_ZOOM_FACTOR) || DEFAULT_SEARCH_ZOOM_FACTOR;
+  const achievableRadius = 1.25 / Math.pow(zoomFactor, Math.max(1, searchDepth));
   const targetRadius = Math.max(requestedTargetRadius, achievableRadius);
 
   for (let attempt = 0; attempt < MAX_PICK_RETRIES; attempt += 1) {
     const point = pickBoundaryPoint(
       aspect,
       searchDepth,
+      zoomFactor,
       searchGridSize,
       minimumRadius,
       chosenPower
@@ -116,7 +123,7 @@ function findValidBoundaryPoint(aspect, searchDepth, searchGridSize, minimumRadi
   return fallback || { centerX: -0.75, centerY: 0.3, radius: minimumRadius };
 }
 
-function pickBoundaryPoint(aspect, searchDepth, searchGridSize, minimumRadius, chosenPower) {
+function pickBoundaryPoint(aspect, searchDepth, searchZoomFactor, searchGridSize, minimumRadius, chosenPower) {
   const rows = searchGridSize;
   const cols = searchGridSize;
   const count = rows * cols;
@@ -130,6 +137,8 @@ function pickBoundaryPoint(aspect, searchDepth, searchGridSize, minimumRadius, c
   let centerY = 0.0;
   let radius = 1.25;
   let maxIter = 100;
+
+  const zoomFactor = clampNumber(Number(searchZoomFactor), MIN_SEARCH_ZOOM_FACTOR, MAX_SEARCH_ZOOM_FACTOR) || DEFAULT_SEARCH_ZOOM_FACTOR;
 
   for (let level = 0; level < searchDepth && radius > minimumRadius; level += 1) {
     const xStart = centerX - radius;
@@ -190,7 +199,7 @@ function pickBoundaryPoint(aspect, searchDepth, searchGridSize, minimumRadius, c
 
     centerX = xCoord[pickedCol];
     centerY = yCoord[pickedRow];
-    radius /= 4.0;
+    radius /= zoomFactor;
     maxIter += 100;
   }
 

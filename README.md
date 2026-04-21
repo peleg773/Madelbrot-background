@@ -2,7 +2,7 @@
 
 Live at [https://peleg773.github.io/Madelbrot-background/](https://peleg773.github.io/Madelbrot-background/).
 
-Fullscreen animated Mandelbrot/Multibrot background ported from Processing.
+Animated Mandelbrot/Multibrot background ported from Processing.
 
 ## What It Does
 - Renders a continuously evolving fractal in real time.
@@ -28,7 +28,7 @@ Fullscreen animated Mandelbrot/Multibrot background ported from Processing.
 
 ## Mobile Notes
 - Designed to run on modern mobile browsers (Chrome/Safari/Firefox).
-- Canvas is fullscreen and responsive to orientation/viewport changes.
+- Canvas fills the viewport and responds to orientation/viewport changes.
 - If Worker creation fails on a device/browser, scene picking continues on the main thread.
 - Pull-to-refresh remains available (the page is not hard-locked with `overflow: hidden`).
 - Menu opening gesture is edge-only from the left side to reduce scroll conflicts.
@@ -42,10 +42,7 @@ Fullscreen animated Mandelbrot/Multibrot background ported from Processing.
 | `H` | Hold (stay on current scene) |
 | `S` | Save current frame as PNG |
 | `M` | Toggle settings menu |
-| `F` | Toggle fullscreen |
 | `Esc` | Close settings menu |
-
-Double-click or double-tap the canvas to toggle fullscreen.
 
 ## Controls (Slide-In Menu)
 Open by dragging from the left edge.
@@ -62,7 +59,8 @@ Open by dragging from the left edge.
   - Iterations per second slider (`15..720`) for frame-rate-independent speed control.
   - Scene switching is length-driven only (no coverage trigger).
 - **Scene**
-  - Boundary search depth slider.
+  - Search depth slider.
+  - Search zoom slider.
   - Power range slider (`2..8`), sampled uniformly from the selected integer range.
 - **Screen**
   - Resolution quality: `High=1×1`, `Medium=2×2`, `Low=3×3`, `Very Low=4×4` pixels per complex number.
@@ -75,11 +73,12 @@ Open by dragging from the left edge.
 - Worker request payload now includes:
   - viewport size
   - simulation grid size
-  - boundary search depth
+  - search depth
+  - search zoom
   - power range (`powerMin`, `powerMax`)
 - Main-thread fallback mirrors the same picker algorithm and settings.
 
 ## Settings Application
 - Color and timing controls apply immediately to the current scene.
-- Scene picker controls (boundary search depth + power range) are staged and only apply on the next scene transition.
+- Scene picker controls (search depth + search zoom + power range) are staged and only apply on the next scene transition.
 - Changing quality (resolution preset) rebuilds render targets and starts a new scene immediately.

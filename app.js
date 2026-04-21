@@ -25,6 +25,14 @@ const FULLSCREEN_TRIANGLES = 3;
 const COLOR_CURVE_EXPONENT = Math.log(0.21) / Math.log(0.5);
 const MIN_ITERATION_RATE = 15;
 const MAX_ITERATION_RATE = 720;
+const DEFAULT_SEARCH_ZOOM_FACTOR = 4.0;
+const MIN_SEARCH_ZOOM_FACTOR = 2.0;
+const MAX_SEARCH_ZOOM_FACTOR = 8.0;
+const HUD_AUTO_DIM_DELAY_MS = 2600;
+
+const UI_THEME_SYSTEM = "system";
+const UI_THEME_LIGHT = "light";
+const UI_THEME_DARK = "dark";
 
 const SETTINGS_STORAGE_KEY = "mandelbrotBackground.settings.v2";
 const LEGACY_SETTINGS_STORAGE_KEY = "mandelbrotBackground.settings.v1";
@@ -112,9 +120,11 @@ const GLOBAL_SETTING_KEYS = Object.freeze([
   "sceneSwitchLimit",
   "iterationRate",
   "boundarySearchDepth",
+  "searchZoomFactor",
   "powerMin",
   "powerMax",
-  "showButtons"
+  "showButtons",
+  "themePreference"
 ]);
 
 const DEFAULT_RUNTIME_SETTINGS = Object.freeze({
@@ -129,9 +139,11 @@ const DEFAULT_RUNTIME_SETTINGS = Object.freeze({
   sceneSwitchLimit: 36,
   iterationRate: 60,
   boundarySearchDepth: 20,
+  searchZoomFactor: DEFAULT_SEARCH_ZOOM_FACTOR,
   powerMin: 2,
   powerMax: 5,
-  showButtons: true
+  showButtons: true,
+  themePreference: UI_THEME_SYSTEM
 });
 
 let settingsStore = loadSettingsStore();
@@ -187,6 +199,7 @@ let sceneLogPower = Math.log(2.0);
 
 let sceneIterationPhase = 1;
 let sceneStartColorPhase = Math.random();
+let sceneRandomStartColorPhase = sceneStartColorPhase;
 
 let sceneElapsedFrames = 0;
 let sceneElapsedIterations = 0;
@@ -214,6 +227,12 @@ let activePaletteTexture = null;
 let drawerProgress = 0;
 let drawerOpen = false;
 let drawerDrag = null;
+let floatingUiAwake = true;
+let floatingUiAutoDimTimer = 0;
+let lastMouseActivityTime = 0;
+let lastMouseActivityX = Number.NaN;
+let lastMouseActivityY = Number.NaN;
+let themeMediaQuery = null;
 
 let palettePreviewActive = false;
 let previewPaletteId = null;
@@ -280,7 +299,6 @@ function bootstrap() {
   window.addEventListener("resize", () => handleResize(false), { passive: true });
   document.addEventListener("visibilitychange", handleVisibilityChange, { passive: true });
 
-  setupCanvasDoubleTapFullscreen();
   setupKeyboardShortcuts();
 
   handleResize(true);
@@ -302,6 +320,7 @@ function cacheDomElements() {
   drawerDragHandle = document.getElementById("drawer-drag-handle");
 
   ui.closeButton = document.getElementById("menu-close-button");
+  ui.themeToggleButton = document.getElementById("theme-toggle-button");
   ui.sceneHud = document.getElementById("scene-hud");
   ui.saveFrameButton = document.getElementById("save-frame-button");
   ui.pauseSceneButton = document.getElementById("pause-scene-button");
@@ -324,6 +343,8 @@ function cacheDomElements() {
   ui.iterationRateValue = document.getElementById("iteration-rate-value");
   ui.boundarySearchDepthSlider = document.getElementById("boundary-search-depth-slider");
   ui.boundarySearchDepthValue = document.getElementById("boundary-search-depth-value");
+  ui.searchZoomAggressionSlider = document.getElementById("search-zoom-aggression-slider");
+  ui.searchZoomAggressionValue = document.getElementById("search-zoom-aggression-value");
   ui.powerRangeControl = document.getElementById("power-range-control");
   ui.powerMinSlider = document.getElementById("power-min-slider");
   ui.powerMaxSlider = document.getElementById("power-max-slider");
@@ -354,6 +375,8 @@ function initializeMenuUi() {
   setupDrawerInteractions();
   setupPowerRangeTrackInteraction();
   setupInfoButtonInteractions();
+  setupFloatingUiActivityTracking();
+  setupThemePreferenceHandling();
   refreshHudVisibility();
   syncSceneControlButtons();
 }
@@ -495,6 +518,7 @@ function updatePreviewUi(paletteId, profile) {
 
   const mode = profile.startColorMode || defaults.startColorMode;
   ui.startColorRandomToggle.checked = mode === "random";
+  updateStartColorSliderThumbAppearance(mode);
 
   const phase = profile.startColorPhase ?? defaults.startColorPhase;
   ui.startColorSlider.value = String(phase);
@@ -533,6 +557,7 @@ function revertPreviewUi() {
   ui.smoothColorsToggle.checked = s.smoothColors;
 
   ui.startColorRandomToggle.checked = s.startColorMode === "random";
+  updateStartColorSliderThumbAppearance(s.startColorMode);
   ui.startColorSlider.value = String(s.startColorPhase);
   ui.startColorValue.textContent = `${Math.round(s.startColorPhase * 360)}°`;
 }
@@ -666,6 +691,13 @@ function syncOtherCustomDropdowns() {
 function setupMenuEvents() {
   ui.closeButton.addEventListener("click", () => setDrawerOpen(false, true));
 
+  ui.themeToggleButton?.addEventListener("click", () => {
+    const effectiveTheme = getEffectiveUiTheme(runtimeSettings.themePreference);
+    updateRuntimeSettings({
+      themePreference: effectiveTheme === UI_THEME_DARK ? UI_THEME_LIGHT : UI_THEME_DARK
+    });
+  });
+
   ui.paletteSelect.addEventListener("change", () => {
     updateRuntimeSettings({ paletteId: ui.paletteSelect.value });
   });
@@ -707,6 +739,10 @@ function setupMenuEvents() {
 
   ui.boundarySearchDepthSlider.addEventListener("input", () => {
     updateRuntimeSettings({ boundarySearchDepth: Number(ui.boundarySearchDepthSlider.value) });
+  });
+
+  ui.searchZoomAggressionSlider?.addEventListener("input", () => {
+    updateRuntimeSettings({ searchZoomFactor: Number(ui.searchZoomAggressionSlider.value) });
   });
 
   ui.powerMinSlider.addEventListener("input", () => {
@@ -872,6 +908,7 @@ function setDrawerOpen(isOpen, animate) {
   }
   const target = drawerOpen ? 1 : 0;
   applyDrawerProgress(target, animate);
+  wakeFloatingUi();
 }
 
 function closeAllSimpleCustomDropdowns() {
@@ -944,6 +981,7 @@ function updateRuntimeSettings(partial) {
 function arePickerSettingsEqual(a, b) {
   return (
     a.boundarySearchDepth === b.boundarySearchDepth &&
+    a.searchZoomFactor === b.searchZoomFactor &&
     a.powerMin === b.powerMin &&
     a.powerMax === b.powerMax
   );
@@ -969,9 +1007,12 @@ function applyImmediateSettings(previous, next) {
 
   if (previous.startColorMode !== next.startColorMode) {
     activeSettings.startColorMode = next.startColorMode;
-    if (next.startColorMode !== "random") {
+    if (next.startColorMode === "random") {
+      sceneStartColorPhase = sceneRandomStartColorPhase;
+    } else {
       sceneStartColorPhase = next.startColorPhase;
     }
+    updateStartColorSliderThumbAppearance(next.startColorMode);
   }
 
   if (previous.startColorPhase !== next.startColorPhase) {
@@ -1007,8 +1048,14 @@ function applyImmediateSettings(previous, next) {
     activeSettings.iterationRate = next.iterationRate;
   }
 
+  if (previous.themePreference !== next.themePreference) {
+    activeSettings.themePreference = next.themePreference;
+    applyUiTheme(next.themePreference);
+  }
+
   if (previous.showButtons !== next.showButtons) {
     activeSettings.showButtons = next.showButtons;
+    wakeFloatingUi();
     refreshHudVisibility();
   }
 
@@ -1025,6 +1072,7 @@ function activatePendingPickerSettingsIfNeeded() {
   }
 
   activeSettings.boundarySearchDepth = runtimeSettings.boundarySearchDepth;
+  activeSettings.searchZoomFactor = runtimeSettings.searchZoomFactor;
   activeSettings.powerMin = runtimeSettings.powerMin;
   activeSettings.powerMax = runtimeSettings.powerMax;
   pickerSettingsPending = false;
@@ -1042,6 +1090,8 @@ function applySettingsToUi() {
   ui.paletteSelect.value = runtimeSettings.paletteId;
   syncPaletteDropdownSelection();
   updateStartColorSliderGradient();
+  updateStartColorSliderThumbAppearance(runtimeSettings.startColorMode);
+  applyUiTheme(runtimeSettings.themePreference);
 
   ui.paletteCycleSlider.value = String(runtimeSettings.paletteCycleLength);
   ui.paletteCycleValue.textContent = `${runtimeSettings.paletteCycleLength.toFixed(1)}`;
@@ -1069,6 +1119,11 @@ function applySettingsToUi() {
   ui.boundarySearchDepthSlider.value = String(runtimeSettings.boundarySearchDepth);
   ui.boundarySearchDepthValue.textContent = String(runtimeSettings.boundarySearchDepth);
 
+  if (ui.searchZoomAggressionSlider && ui.searchZoomAggressionValue) {
+    ui.searchZoomAggressionSlider.value = String(runtimeSettings.searchZoomFactor);
+    ui.searchZoomAggressionValue.textContent = formatSearchZoomFactorValue(runtimeSettings.searchZoomFactor);
+  }
+
   ui.powerMinSlider.value = String(runtimeSettings.powerMin);
   ui.powerMaxSlider.value = String(runtimeSettings.powerMax);
   ui.powerRangeValue.textContent = `${runtimeSettings.powerMin} to ${runtimeSettings.powerMax}`;
@@ -1087,6 +1142,16 @@ function updateStartColorSliderGradient() {
 
   const palette = getPaletteById(runtimeSettings.paletteId) || PALETTE_OPTIONS[0];
   ui.startColorSlider.style.setProperty("--start-color-gradient", buildPaletteCssGradient(palette));
+}
+
+function updateStartColorSliderThumbAppearance(mode) {
+  if (!ui.startColorSlider) {
+    return;
+  }
+
+  const isRandom = mode === "random";
+  ui.startColorSlider.classList.toggle("is-random-mode", isRandom);
+  ui.startColorSlider.classList.toggle("is-manual-mode", !isRandom);
 }
 
 function getPaletteById(paletteId) {
@@ -1173,6 +1238,136 @@ function focusElementWithoutScroll(element) {
   }
 }
 
+function setupFloatingUiActivityTracking() {
+  document.addEventListener("pointerdown", handleFloatingUiPointerDown, { passive: true });
+  document.addEventListener("pointermove", handleFloatingUiPointerMove, { passive: true });
+  document.addEventListener("keydown", handleFloatingUiKeyboardActivity);
+  document.addEventListener("focusin", () => {
+    wakeFloatingUi();
+  }, { passive: true });
+
+  wakeFloatingUi();
+}
+
+function handleFloatingUiPointerDown() {
+  wakeFloatingUi();
+}
+
+function handleFloatingUiPointerMove(event) {
+  if (event.pointerType && event.pointerType !== "mouse") {
+    return;
+  }
+
+  const now = performance.now();
+  const dx = Number.isFinite(lastMouseActivityX) ? Math.abs(event.clientX - lastMouseActivityX) : Infinity;
+  const dy = Number.isFinite(lastMouseActivityY) ? Math.abs(event.clientY - lastMouseActivityY) : Infinity;
+  if (now - lastMouseActivityTime < 80 && dx < 6 && dy < 6) {
+    return;
+  }
+
+  lastMouseActivityTime = now;
+  lastMouseActivityX = event.clientX;
+  lastMouseActivityY = event.clientY;
+  wakeFloatingUi();
+}
+
+function handleFloatingUiKeyboardActivity(event) {
+  if (event.ctrlKey || event.metaKey || event.altKey) {
+    return;
+  }
+  wakeFloatingUi();
+}
+
+function clearFloatingUiAutoDimTimer() {
+  if (floatingUiAutoDimTimer) {
+    window.clearTimeout(floatingUiAutoDimTimer);
+    floatingUiAutoDimTimer = 0;
+  }
+}
+
+function scheduleFloatingUiAutoDim() {
+  clearFloatingUiAutoDimTimer();
+
+  if (runtimeSettings.showButtons === false || drawerProgress > 0.001 || document.hidden) {
+    return;
+  }
+
+  floatingUiAutoDimTimer = window.setTimeout(() => {
+    floatingUiAutoDimTimer = 0;
+    floatingUiAwake = false;
+    refreshHudVisibility();
+  }, HUD_AUTO_DIM_DELAY_MS);
+}
+
+function wakeFloatingUi() {
+  const wasAwake = floatingUiAwake;
+  floatingUiAwake = true;
+
+  if (!wasAwake) {
+    refreshHudVisibility();
+  }
+
+  scheduleFloatingUiAutoDim();
+}
+
+function setupThemePreferenceHandling() {
+  if (themeMediaQuery) {
+    return;
+  }
+
+  themeMediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  const handleThemeChange = () => {
+    if (runtimeSettings.themePreference === UI_THEME_SYSTEM) {
+      applyUiTheme(UI_THEME_SYSTEM);
+    }
+  };
+
+  if (typeof themeMediaQuery.addEventListener === "function") {
+    themeMediaQuery.addEventListener("change", handleThemeChange);
+  } else if (typeof themeMediaQuery.addListener === "function") {
+    themeMediaQuery.addListener(handleThemeChange);
+  }
+
+  applyUiTheme(runtimeSettings.themePreference);
+}
+
+function getEffectiveUiTheme(preference) {
+  if (preference === UI_THEME_DARK || preference === UI_THEME_LIGHT) {
+    return preference;
+  }
+
+  const prefersDark = themeMediaQuery
+    ? themeMediaQuery.matches
+    : window.matchMedia("(prefers-color-scheme: dark)").matches;
+  return prefersDark ? UI_THEME_DARK : UI_THEME_LIGHT;
+}
+
+function applyUiTheme(preference) {
+  const effectiveTheme = getEffectiveUiTheme(preference);
+  const root = document.documentElement;
+
+  root.setAttribute("data-effective-ui-theme", effectiveTheme);
+  if (preference === UI_THEME_SYSTEM) {
+    root.removeAttribute("data-ui-theme");
+  } else {
+    root.setAttribute("data-ui-theme", effectiveTheme);
+  }
+
+  syncThemeToggleButton(effectiveTheme);
+}
+
+function syncThemeToggleButton(effectiveTheme) {
+  if (!ui.themeToggleButton) {
+    return;
+  }
+
+  const nextTheme = effectiveTheme === UI_THEME_DARK ? UI_THEME_LIGHT : UI_THEME_DARK;
+  const nextLabel = nextTheme === UI_THEME_DARK ? "Switch to dark mode" : "Switch to light mode";
+  ui.themeToggleButton.setAttribute("aria-pressed", effectiveTheme === UI_THEME_DARK ? "true" : "false");
+  ui.themeToggleButton.setAttribute("aria-label", nextLabel);
+  ui.themeToggleButton.title = nextLabel;
+}
+
 function setupInfoButtonInteractions() {
   const infoButtons = document.querySelectorAll(".info-button");
   for (const button of infoButtons) {
@@ -1187,37 +1382,6 @@ function setupInfoButtonInteractions() {
       event.stopPropagation();
       focusElementWithoutScroll(button);
     });
-  }
-}
-
-function setupCanvasDoubleTapFullscreen() {
-  let lastTapTime = 0;
-  canvas.addEventListener("dblclick", (event) => {
-    event.preventDefault();
-    toggleFullscreen();
-  });
-
-  canvas.addEventListener("touchend", (event) => {
-    if (event.changedTouches.length !== 1) {
-      return;
-    }
-    const now = performance.now();
-    if (now - lastTapTime < 350) {
-      event.preventDefault();
-      toggleFullscreen();
-      lastTapTime = 0;
-    } else {
-      lastTapTime = now;
-    }
-  }, { passive: false });
-}
-
-function toggleFullscreen() {
-  if (document.fullscreenElement) {
-    document.exitFullscreen().catch(() => {});
-  } else {
-    const el = document.documentElement;
-    (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen || (() => {})).call(el);
   }
 }
 
@@ -1247,9 +1411,6 @@ function setupKeyboardShortcuts() {
       case "m":
         setDrawerOpen(!drawerOpen, true);
         break;
-      case "f":
-        toggleFullscreen();
-        break;
     }
   });
 }
@@ -1257,13 +1418,16 @@ function setupKeyboardShortcuts() {
 function refreshHudVisibility() {
   const showButtons = runtimeSettings.showButtons !== false;
   const hidePeek = !showButtons || drawerProgress > 0.001;
+  const dimFloatingUi = showButtons && drawerProgress <= 0.001 && !floatingUiAwake;
 
   if (menuPeekButton) {
     menuPeekButton.classList.toggle("is-hidden", hidePeek);
+    menuPeekButton.classList.toggle("is-dimmed", !hidePeek && dimFloatingUi);
   }
 
   if (ui.sceneHud) {
     ui.sceneHud.classList.toggle("is-hidden", !showButtons);
+    ui.sceneHud.classList.toggle("is-dimmed", showButtons && dimFloatingUi);
   }
 }
 
@@ -1369,6 +1533,10 @@ function formatSceneLengthValue(mode, value) {
     return `${Math.round(value)} iters`;
   }
   return `${Math.round(value)} frames`;
+}
+
+function formatSearchZoomFactorValue(value) {
+  return `${value.toFixed(1)}x`;
 }
 
 function extractSettingsSubset(source, keys) {
@@ -1558,6 +1726,9 @@ function normalizeRuntimeSettings(input) {
   next.iterationRate = clampNumber(Math.round(Number(next.iterationRate) || 0), MIN_ITERATION_RATE, MAX_ITERATION_RATE);
 
   next.boundarySearchDepth = clampNumber(Math.round(Number(next.boundarySearchDepth) || 0), 4, 36);
+  next.searchZoomFactor = Math.round(
+    clampNumber(Number(next.searchZoomFactor), MIN_SEARCH_ZOOM_FACTOR, MAX_SEARCH_ZOOM_FACTOR) * 10
+  ) / 10;
 
   let powerMin = clampNumber(Math.round(Number(next.powerMin) || MIN_POWER), MIN_POWER, MAX_POWER);
   let powerMax = clampNumber(Math.round(Number(next.powerMax) || MAX_POWER), MIN_POWER, MAX_POWER);
@@ -1569,6 +1740,10 @@ function normalizeRuntimeSettings(input) {
   next.powerMin = powerMin;
   next.powerMax = powerMax;
   next.showButtons = next.showButtons !== false;
+  next.themePreference =
+    next.themePreference === UI_THEME_DARK || next.themePreference === UI_THEME_LIGHT
+      ? next.themePreference
+      : UI_THEME_SYSTEM;
 
   return next;
 }
@@ -2141,6 +2316,7 @@ function maybeLaunchPick() {
     simulationRows: simRows,
     simulationCols: simCols,
     searchDepth: activeSettings.boundarySearchDepth,
+    searchZoomFactor: activeSettings.searchZoomFactor,
     searchGridSize: PICK_GRID_SIZE,
     minimumRadius: MINIMUM_RENDER_RADIUS,
     powerMin: activeSettings.powerMin,
@@ -2181,6 +2357,9 @@ function chooseScenePower(powerMin, powerMax) {
 function handleVisibilityChange() {
   if (!document.hidden) {
     lastFrameTimeMs = performance.now();
+    wakeFloatingUi();
+  } else {
+    clearFloatingUiAutoDimTimer();
   }
 }
 
@@ -2375,9 +2554,10 @@ function applyScene(scene) {
   sceneLogPower = Math.log(scenePower);
 
   sceneIterationPhase = 1;
+  sceneRandomStartColorPhase = Math.random();
   sceneStartColorPhase =
     activeSettings.startColorMode === "random"
-      ? Math.random()
+      ? sceneRandomStartColorPhase
       : activeSettings.startColorPhase;
 
   sceneElapsedFrames = 0;
@@ -2449,6 +2629,7 @@ function pickSceneLocal(request) {
   const point = findValidBoundaryPointLocal(
     localAspect,
     request.searchDepth,
+    request.searchZoomFactor,
     request.searchGridSize,
     request.minimumRadius,
     selectedPower
@@ -2464,17 +2645,19 @@ function pickSceneLocal(request) {
   };
 }
 
-function findValidBoundaryPointLocal(localAspect, searchDepth, searchGridSize, minimumRadius, scenePowerValue) {
+function findValidBoundaryPointLocal(localAspect, searchDepth, searchZoomFactor, searchGridSize, minimumRadius, scenePowerValue) {
   let fallback = null;
   let best = null;
   const requestedTargetRadius = minimumRadius * PICK_TARGET_RADIUS_FACTOR;
-  const achievableRadius = 1.25 / Math.pow(4, Math.max(1, searchDepth));
+  const zoomFactor = clampNumber(Number(searchZoomFactor), MIN_SEARCH_ZOOM_FACTOR, MAX_SEARCH_ZOOM_FACTOR);
+  const achievableRadius = 1.25 / Math.pow(zoomFactor, Math.max(1, searchDepth));
   const targetRadius = Math.max(requestedTargetRadius, achievableRadius);
 
   for (let attempt = 0; attempt < PICK_MAX_RETRIES; attempt += 1) {
     const point = pickBoundaryPointLocal(
       localAspect,
       searchDepth,
+      zoomFactor,
       searchGridSize,
       minimumRadius,
       scenePowerValue
@@ -2502,7 +2685,7 @@ function findValidBoundaryPointLocal(localAspect, searchDepth, searchGridSize, m
   return fallback || { centerX: -0.75, centerY: 0.3, radius: minimumRadius };
 }
 
-function pickBoundaryPointLocal(localAspect, searchDepth, searchGridSize, minimumRadius, scenePowerValue) {
+function pickBoundaryPointLocal(localAspect, searchDepth, searchZoomFactor, searchGridSize, minimumRadius, scenePowerValue) {
   const rows = searchGridSize;
   const cols = searchGridSize;
   const count = rows * cols;
@@ -2516,6 +2699,8 @@ function pickBoundaryPointLocal(localAspect, searchDepth, searchGridSize, minimu
   let centerY = 0.0;
   let radius = 1.25;
   let maxIter = 100;
+
+  const zoomFactor = clampNumber(Number(searchZoomFactor), MIN_SEARCH_ZOOM_FACTOR, MAX_SEARCH_ZOOM_FACTOR);
 
   for (let level = 0; level < searchDepth && radius > minimumRadius; level += 1) {
     const xStart = centerX - radius;
@@ -2576,7 +2761,7 @@ function pickBoundaryPointLocal(localAspect, searchDepth, searchGridSize, minimu
 
     centerX = xCoord[pickedCol];
     centerY = yCoord[pickedRow];
-    radius /= 4.0;
+    radius /= zoomFactor;
     maxIter += 100;
   }
 
