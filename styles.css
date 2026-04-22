@@ -1157,6 +1157,19 @@ select {
   outline: none;
 }
 
+#reset-settings-button.is-armed {
+  border-color: color-mix(in srgb, #d44848 68%, var(--control-border));
+  background: color-mix(in srgb, #d44848 14%, var(--action-bg));
+  box-shadow: 0 0 18px color-mix(in srgb, #d44848 18%, transparent);
+}
+
+#reset-settings-button.is-armed:hover,
+#reset-settings-button.is-armed:focus-visible {
+  border-color: color-mix(in srgb, #d44848 82%, transparent);
+  background: color-mix(in srgb, #d44848 22%, var(--action-bg));
+  box-shadow: 0 0 20px color-mix(in srgb, #d44848 26%, transparent);
+}
+
 .action-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

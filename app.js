@@ -35,6 +35,7 @@ const DEFAULT_SEARCH_ZOOM_FACTOR = 4.0;
 const MIN_SEARCH_ZOOM_FACTOR = 2.0;
 const MAX_SEARCH_ZOOM_FACTOR = 8.0;
 const HUD_AUTO_DIM_DELAY_MS = 2600;
+const RESET_SETTINGS_CONFIRM_WINDOW_MS = 4000;
 
 const UI_THEME_SYSTEM = "system";
 const UI_THEME_LIGHT = "light";
@@ -135,11 +136,11 @@ const GLOBAL_SETTING_KEYS = Object.freeze([
 
 const DEFAULT_RUNTIME_SETTINGS = Object.freeze({
   renderScale: 1,
-  paletteId: "hsv-classic",
-  paletteCycleLength: 800,
-  colorIncrementCurve: 0.45,
-  startColorMode: "random",
-  startColorPhase: 0,
+  paletteId: "wikipedia",
+  paletteCycleLength: 500,
+  colorIncrementCurve: 0.47,
+  startColorMode: "manual",
+  startColorPhase: 15 / 360,
   smoothColors: true,
   sceneSwitchMode: SCENE_SWITCH_MODE_SECONDS,
   sceneSwitchLimit: 36,
@@ -245,6 +246,8 @@ let palettePreviewActive = false;
 let previewPaletteId = null;
 let prePreviewSettings = null;
 let prePreviewStartColorPhase = 0;
+let resetSettingsArmed = false;
+let resetSettingsConfirmTimer = 0;
 
 const SCENE_SWITCH_MODE_OPTIONS = [
   { value: "seconds", label: "Seconds" },
@@ -783,8 +786,9 @@ function setupMenuEvents() {
   });
 
   ui.resetSettingsButton.addEventListener("click", () => {
-    resetAllSettings();
+    handleResetSettingsButtonClick();
   });
+  syncResetSettingsButton();
 
   if (menuPeekButton) {
     menuPeekButton.addEventListener("click", () => setDrawerOpen(true, true));
@@ -972,6 +976,7 @@ function onDrawerDragEnd(event) {
 function setDrawerOpen(isOpen, animate) {
   drawerOpen = Boolean(isOpen);
   if (!drawerOpen) {
+    disarmResetSettingsButton();
     setPaletteDropdownOpen(false);
     closeAllSimpleCustomDropdowns();
   }
@@ -1604,6 +1609,63 @@ function resetAllSettings() {
   applySettingsToUi();
   applyImmediateSettings(previous, runtimeSettings);
   pickerSettingsPending = !arePickerSettingsEqual(runtimeSettings, activeSettings);
+}
+
+function syncResetSettingsButton() {
+  if (!ui.resetSettingsButton) {
+    return;
+  }
+
+  ui.resetSettingsButton.classList.toggle("is-armed", resetSettingsArmed);
+  ui.resetSettingsButton.textContent = resetSettingsArmed ? "Click Again to Reset" : "Reset Settings";
+  ui.resetSettingsButton.setAttribute(
+    "aria-label",
+    resetSettingsArmed ? "Confirm reset settings" : "Reset settings"
+  );
+  ui.resetSettingsButton.title = resetSettingsArmed
+    ? "Click again within 4 seconds to reset settings"
+    : "Reset settings";
+}
+
+function clearResetSettingsConfirmTimer() {
+  if (!resetSettingsConfirmTimer) {
+    return;
+  }
+
+  window.clearTimeout(resetSettingsConfirmTimer);
+  resetSettingsConfirmTimer = 0;
+}
+
+function disarmResetSettingsButton() {
+  clearResetSettingsConfirmTimer();
+  if (!resetSettingsArmed) {
+    syncResetSettingsButton();
+    return;
+  }
+
+  resetSettingsArmed = false;
+  syncResetSettingsButton();
+}
+
+function armResetSettingsButton() {
+  clearResetSettingsConfirmTimer();
+  resetSettingsArmed = true;
+  syncResetSettingsButton();
+  resetSettingsConfirmTimer = window.setTimeout(() => {
+    resetSettingsConfirmTimer = 0;
+    resetSettingsArmed = false;
+    syncResetSettingsButton();
+  }, RESET_SETTINGS_CONFIRM_WINDOW_MS);
+}
+
+function handleResetSettingsButtonClick() {
+  if (!resetSettingsArmed) {
+    armResetSettingsButton();
+    return;
+  }
+
+  disarmResetSettingsButton();
+  resetAllSettings();
 }
 
 function getSceneSwitchRange(mode) {
@@ -2769,7 +2831,6 @@ function findValidScenePointLocal(localAspect, searchDepth, searchZoomFactor, se
       minimumRadius,
       scenePowerValue
     );
-
     fallback = point;
 
     if (Math.abs(point.centerY) <= PICK_MIN_CY_ABS) {
@@ -2811,6 +2872,7 @@ function pickScenePointLocal(localAspect, searchDepth, searchZoomFactor, searchG
 
   const zoomFactor = clampNumber(Number(searchZoomFactor), MIN_SEARCH_ZOOM_FACTOR, MAX_SEARCH_ZOOM_FACTOR);
   const maxIterStep = getPickerMaxIterStep(zoomFactor);
+  const interiorAnchorDistanceCells = Math.max(1, Math.floor(Math.min(cols, rows) / (2 * zoomFactor)));
   let maxIter = PICK_BASE_MAX_ITER;
 
   for (let level = 0; level < searchDepth && radius > minimumRadius; level += 1) {
@@ -2856,6 +2918,7 @@ function pickScenePointLocal(localAspect, searchDepth, searchZoomFactor, searchG
       escapedCount,
       SLOW_ESCAPE_ESCAPED_PERCENTILE
     );
+    const insidePrefixSum = buildInsidePrefixSum(inside, cols, rows);
 
     for (let j = 1; j < rows - 1; j += 1) {
       const rowOffset = j * cols;
@@ -2883,6 +2946,9 @@ function pickScenePointLocal(localAspect, searchDepth, searchZoomFactor, searchG
 
         const escapeIter = escapeIterations[idx];
         if (escapeIter < slowEscapeThreshold) {
+          continue;
+        }
+        if (!hasInsideAnchorInRange(insidePrefixSum, cols, rows, i, j, interiorAnchorDistanceCells)) {
           continue;
         }
 
@@ -2952,6 +3018,40 @@ function getEscapedIterationPercentileThreshold(histogram, escapedCount, percent
   }
 
   return histogram.length - 1;
+}
+
+function buildInsidePrefixSum(inside, cols, rows) {
+  const stride = cols + 1;
+  const prefixSum = new Uint32Array((rows + 1) * stride);
+
+  for (let j = 0; j < rows; j += 1) {
+    let rowSum = 0;
+    const rowOffset = j * cols;
+    const prefixRowOffset = (j + 1) * stride;
+    const prefixPrevRowOffset = j * stride;
+    for (let i = 0; i < cols; i += 1) {
+      rowSum += inside[rowOffset + i];
+      prefixSum[prefixRowOffset + i + 1] = prefixSum[prefixPrevRowOffset + i + 1] + rowSum;
+    }
+  }
+
+  return prefixSum;
+}
+
+function hasInsideAnchorInRange(prefixSum, cols, rows, col, row, distanceCells) {
+  const stride = cols + 1;
+  const left = Math.max(0, col - distanceCells);
+  const right = Math.min(cols - 1, col + distanceCells);
+  const top = Math.max(0, row - distanceCells);
+  const bottom = Math.min(rows - 1, row + distanceCells);
+
+  const totalInside =
+    prefixSum[(bottom + 1) * stride + right + 1] -
+    prefixSum[top * stride + right + 1] -
+    prefixSum[(bottom + 1) * stride + left] +
+    prefixSum[top * stride + left];
+
+  return totalInside > 0;
 }
 
 function pickSceneCandidateIndexLocal(boundaryIndices, boundaryCount, slowOutsideIndices, slowOutsideWeights, slowOutsideCount) {

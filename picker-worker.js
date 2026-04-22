@@ -16,7 +16,7 @@ const PICK_BASE_MAX_ITER = 100;
 const PICK_MIN_ITER_STEP = 12;
 const PICK_REFERENCE_ZOOM_FACTOR = 100;
 const PICK_REFERENCE_ITER_STEP = 100;
-const SLOW_ESCAPE_ESCAPED_PERCENTILE = 0.8;
+const SLOW_ESCAPE_ESCAPED_PERCENTILE = 0.70;
 const SLOW_ESCAPE_PICK_PROBABILITY = 0.3;
 
 self.addEventListener("message", (event) => {
@@ -148,6 +148,7 @@ function pickScenePoint(aspect, searchDepth, searchZoomFactor, searchGridSize, m
 
   const zoomFactor = clampNumber(Number(searchZoomFactor), MIN_SEARCH_ZOOM_FACTOR, MAX_SEARCH_ZOOM_FACTOR) || DEFAULT_SEARCH_ZOOM_FACTOR;
   const maxIterStep = getPickerMaxIterStep(zoomFactor);
+  const interiorAnchorDistanceCells = Math.max(1, Math.floor(Math.min(cols, rows) / (2 * zoomFactor)));
   let maxIter = PICK_BASE_MAX_ITER;
 
   for (let level = 0; level < searchDepth && radius > minimumRadius; level += 1) {
@@ -193,6 +194,7 @@ function pickScenePoint(aspect, searchDepth, searchZoomFactor, searchGridSize, m
       escapedCount,
       SLOW_ESCAPE_ESCAPED_PERCENTILE
     );
+    const insidePrefixSum = buildInsidePrefixSum(inside, cols, rows);
 
     for (let j = 1; j < rows - 1; j += 1) {
       const rowOffset = j * cols;
@@ -220,6 +222,9 @@ function pickScenePoint(aspect, searchDepth, searchZoomFactor, searchGridSize, m
 
         const escapeIter = escapeIterations[idx];
         if (escapeIter < slowEscapeThreshold) {
+          continue;
+        }
+        if (!hasInsideAnchorInRange(insidePrefixSum, cols, rows, i, j, interiorAnchorDistanceCells)) {
           continue;
         }
 
@@ -289,6 +294,40 @@ function getEscapedIterationPercentileThreshold(histogram, escapedCount, percent
   }
 
   return histogram.length - 1;
+}
+
+function buildInsidePrefixSum(inside, cols, rows) {
+  const stride = cols + 1;
+  const prefixSum = new Uint32Array((rows + 1) * stride);
+
+  for (let j = 0; j < rows; j += 1) {
+    let rowSum = 0;
+    const rowOffset = j * cols;
+    const prefixRowOffset = (j + 1) * stride;
+    const prefixPrevRowOffset = j * stride;
+    for (let i = 0; i < cols; i += 1) {
+      rowSum += inside[rowOffset + i];
+      prefixSum[prefixRowOffset + i + 1] = prefixSum[prefixPrevRowOffset + i + 1] + rowSum;
+    }
+  }
+
+  return prefixSum;
+}
+
+function hasInsideAnchorInRange(prefixSum, cols, rows, col, row, distanceCells) {
+  const stride = cols + 1;
+  const left = Math.max(0, col - distanceCells);
+  const right = Math.min(cols - 1, col + distanceCells);
+  const top = Math.max(0, row - distanceCells);
+  const bottom = Math.min(rows - 1, row + distanceCells);
+
+  const totalInside =
+    prefixSum[(bottom + 1) * stride + right + 1] -
+    prefixSum[top * stride + right + 1] -
+    prefixSum[(bottom + 1) * stride + left] +
+    prefixSum[top * stride + left];
+
+  return totalInside > 0;
 }
 
 function pickSceneCandidateIndex(boundaryIndices, boundaryCount, slowOutsideIndices, slowOutsideWeights, slowOutsideCount) {
