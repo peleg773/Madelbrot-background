@@ -246,11 +246,8 @@ select {
   z-index: 10;
   visibility: hidden;
   opacity: 0;
-  background: var(--overlay-bg);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
   pointer-events: none;
-  transition: opacity 220ms ease, visibility 220ms ease, backdrop-filter 300ms ease, -webkit-backdrop-filter 300ms ease, background 300ms ease;
+  transition: opacity 220ms ease, visibility 220ms ease;
 }
 
 #menu-peek-button,
@@ -486,11 +483,7 @@ select {
   scrollbar-color: var(--scrollbar-thumb-end) var(--scrollbar-track);
 }
 
-#menu-overlay.preview-blur-off {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  background: transparent;
-}
+
 
 #settings-drawer::-webkit-scrollbar {
   width: 8px;

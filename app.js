@@ -468,7 +468,6 @@ function setPaletteDropdownOpen(isOpen) {
       palettePreviewActive = true;
       prePreviewSettings = { ...runtimeSettings };
       prePreviewStartColorPhase = sceneStartColorPhase;
-      menuOverlay.classList.add("preview-blur-off");
     }
   } else {
     if (palettePreviewActive && prePreviewSettings) {
@@ -477,7 +476,6 @@ function setPaletteDropdownOpen(isOpen) {
     palettePreviewActive = false;
     prePreviewSettings = null;
     previewPaletteId = null;
-    menuOverlay.classList.remove("preview-blur-off");
   }
 
   syncPaletteDropdownSelection();
@@ -501,7 +499,7 @@ function applyPalettePreview(paletteId) {
   if (mode === "manual") {
     sceneStartColorPhase = profile.startColorPhase ?? defaults.startColorPhase;
   } else {
-    sceneStartColorPhase = prePreviewStartColorPhase;
+    sceneStartColorPhase = sceneRandomStartColorPhase;
   }
 
   updatePreviewUi(paletteId, profile);
@@ -991,9 +989,6 @@ function applyDrawerProgress(progress, animate) {
   drawerProgress = clampNumber(progress, 0, 1);
 
   settingsDrawer.style.transition = animate ? "transform 220ms ease" : "none";
-  menuOverlay.style.transition = animate
-    ? "opacity 220ms ease, visibility 220ms ease, backdrop-filter 300ms ease, -webkit-backdrop-filter 300ms ease, background 300ms ease"
-    : "backdrop-filter 300ms ease, -webkit-backdrop-filter 300ms ease, background 300ms ease";
 
   const translatePct = -100 + drawerProgress * 100;
   settingsDrawer.style.transform = `translateX(${translatePct}%)`;
@@ -1007,7 +1002,6 @@ function applyDrawerProgress(progress, animate) {
   }
 
   if (drawerProgress <= 0.001) {
-    menuOverlay.style.opacity = "0";
     menuOverlay.style.pointerEvents = "none";
     menuOverlay.style.visibility = "hidden";
     settingsDrawer.setAttribute("aria-hidden", "true");
@@ -1015,7 +1009,6 @@ function applyDrawerProgress(progress, animate) {
     settingsDrawer.style.pointerEvents = "none";
   } else {
     menuOverlay.style.visibility = "visible";
-    menuOverlay.style.opacity = `${0.95 * drawerProgress}`;
     menuOverlay.style.pointerEvents = "auto";
     settingsDrawer.setAttribute("aria-hidden", "false");
     settingsDrawer.style.visibility = "visible";
