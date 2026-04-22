@@ -148,7 +148,7 @@ const DEFAULT_RUNTIME_SETTINGS = Object.freeze({
   boundarySearchDepth: 20,
   searchZoomFactor: DEFAULT_SEARCH_ZOOM_FACTOR,
   powerMin: 2,
-  powerMax: 5,
+  powerMax: 2,
   showButtons: true,
   themePreference: UI_THEME_SYSTEM
 });
