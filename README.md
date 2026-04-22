@@ -61,7 +61,7 @@ Open by dragging from the left edge.
 - **Scene**
   - Search depth slider.
   - Search zoom slider.
-  - Power range slider (`2..8`), sampled uniformly from the selected integer range.
+  - Exponent range slider (`2..8`), sampled uniformly from the selected integer range.
 - **Screen**
   - Resolution quality: `High=1×1`, `Medium=2×2`, `Low=3×3`, `Very Low=4×4` pixels per complex number.
   - `Show Buttons` toggle for the floating scene HUD.
@@ -75,10 +75,10 @@ Open by dragging from the left edge.
   - simulation grid size
   - search depth
   - search zoom
-  - power range (`powerMin`, `powerMax`)
+  - exponent range (`powerMin`, `powerMax`)
 - Main-thread fallback mirrors the same picker algorithm and settings.
 
 ## Settings Application
 - Color and timing controls apply immediately to the current scene.
-- Scene picker controls (search depth + search zoom + power range) are staged and only apply on the next scene transition.
+- Scene picker controls (search depth + search zoom + exponent range) are staged and only apply on the next scene transition.
 - Changing quality (resolution preset) rebuilds render targets and starts a new scene immediately.

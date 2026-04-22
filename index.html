@@ -15,6 +15,10 @@
     <span class="menu-peek-chevron" aria-hidden="true"></span>
   </button>
 
+  <button id="menu-close-handle" type="button" aria-label="Close settings" title="Close settings">
+    <span class="menu-close-chevron" aria-hidden="true"></span>
+  </button>
+
   <div id="scene-hud" aria-label="Scene controls">
     <button id="save-frame-button" class="hud-button" type="button" aria-label="Save current frame" title="Save current frame">
       <svg class="hud-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -202,15 +206,33 @@
       <input id="search-zoom-aggression-slider" type="range" min="2" max="8" step="0.1">
 
       <div class="label-row">
-        <label>Power Range</label>
+        <label>Exponent Range</label>
         <div class="label-side">
           <span id="power-range-value" class="value-label"></span>
-          <button class="info-button" type="button" aria-label="About power range" data-info="Choose which Mandelbrot power values new scenes can use.">i</button>
+          <button class="info-button" type="button" aria-label="About exponent range" data-info="Choose which Mandelbrot exponent values new scenes can use.">i</button>
         </div>
       </div>
       <div class="dual-range" id="power-range-control">
         <div class="dual-range-track"></div>
         <div class="dual-range-fill" id="power-range-fill"></div>
+        <div class="dual-range-ticks" aria-hidden="true">
+          <span class="dual-range-tick"></span>
+          <span class="dual-range-tick"></span>
+          <span class="dual-range-tick"></span>
+          <span class="dual-range-tick"></span>
+          <span class="dual-range-tick"></span>
+          <span class="dual-range-tick"></span>
+          <span class="dual-range-tick"></span>
+        </div>
+        <div class="dual-range-labels" aria-hidden="true">
+          <span class="dual-range-label">2</span>
+          <span class="dual-range-label">3</span>
+          <span class="dual-range-label">4</span>
+          <span class="dual-range-label">5</span>
+          <span class="dual-range-label">6</span>
+          <span class="dual-range-label">7</span>
+          <span class="dual-range-label">8</span>
+        </div>
         <input id="power-min-slider" type="range" min="2" max="8" step="1">
         <input id="power-max-slider" type="range" min="2" max="8" step="1">
       </div>

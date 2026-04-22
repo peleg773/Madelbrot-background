@@ -130,8 +130,8 @@ const GLOBAL_SETTING_KEYS = Object.freeze([
 const DEFAULT_RUNTIME_SETTINGS = Object.freeze({
   renderScale: 1,
   paletteId: "hsv-classic",
-  paletteCycleLength: 200,
-  colorIncrementCurve: 0,
+  paletteCycleLength: 800,
+  colorIncrementCurve: 0.45,
   startColorMode: "random",
   startColorPhase: 0,
   smoothColors: true,
@@ -156,6 +156,7 @@ let unsupportedEl;
 let menuEdgeZone;
 let menuOverlay;
 let menuPeekButton;
+let menuCloseHandle;
 let settingsDrawer;
 let drawerDragHandle;
 
@@ -296,7 +297,12 @@ function bootstrap() {
   setActivePalette(activeSettings.paletteId);
   setupPickerWorker();
 
-  window.addEventListener("resize", () => handleResize(false), { passive: true });
+  window.addEventListener("resize", () => {
+    handleResize(false);
+    if (drawerOpen && menuCloseHandle) {
+      applyDrawerProgress(drawerProgress, false);
+    }
+  }, { passive: true });
   document.addEventListener("visibilitychange", handleVisibilityChange, { passive: true });
 
   setupKeyboardShortcuts();
@@ -316,6 +322,7 @@ function cacheDomElements() {
   menuEdgeZone = document.getElementById("menu-edge-zone");
   menuOverlay = document.getElementById("menu-overlay");
   menuPeekButton = document.getElementById("menu-peek-button");
+  menuCloseHandle = document.getElementById("menu-close-handle");
   settingsDrawer = document.getElementById("settings-drawer");
   drawerDragHandle = document.getElementById("drawer-drag-handle");
 
@@ -377,6 +384,7 @@ function initializeMenuUi() {
   setupInfoButtonInteractions();
   setupFloatingUiActivityTracking();
   setupThemePreferenceHandling();
+  setupSliderScrollResilience();
   refreshHudVisibility();
   syncSceneControlButtons();
 }
@@ -696,6 +704,7 @@ function setupMenuEvents() {
     updateRuntimeSettings({
       themePreference: effectiveTheme === UI_THEME_DARK ? UI_THEME_LIGHT : UI_THEME_DARK
     });
+    ui.themeToggleButton.blur();
   });
 
   ui.paletteSelect.addEventListener("change", () => {
@@ -795,6 +804,40 @@ function setupMenuEvents() {
   });
 }
 
+function setupSliderScrollResilience() {
+  const isTouchDevice = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+  if (!isTouchDevice) {
+    return;
+  }
+
+  const sliders = settingsDrawer.querySelectorAll('input[type="range"]');
+  for (const slider of sliders) {
+    let touchStartY = 0;
+    let touchStartX = 0;
+    let locked = false;
+
+    slider.addEventListener("touchstart", (e) => {
+      const touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      locked = false;
+    }, { passive: true });
+
+    slider.addEventListener("touchmove", (e) => {
+      if (locked) {
+        return;
+      }
+      const touch = e.touches[0];
+      const dx = Math.abs(touch.clientX - touchStartX);
+      const dy = Math.abs(touch.clientY - touchStartY);
+      if (dy > 10 && dy > dx * 1.5) {
+        locked = true;
+        slider.blur();
+      }
+    }, { passive: true });
+  }
+}
+
 function setupDrawerInteractions() {
   menuOverlay.addEventListener("click", () => setDrawerOpen(false, true));
 
@@ -817,6 +860,28 @@ function setupDrawerInteractions() {
     }
     beginDrawerDrag(event, "close");
   });
+
+  if (menuCloseHandle) {
+    let closeHandleDragged = false;
+    menuCloseHandle.addEventListener("pointerdown", (event) => {
+      if (!drawerOpen) {
+        return;
+      }
+      closeHandleDragged = false;
+      beginDrawerDrag(event, "close");
+    });
+    menuCloseHandle.addEventListener("pointermove", () => {
+      if (drawerDrag) {
+        closeHandleDragged = true;
+      }
+    });
+    menuCloseHandle.addEventListener("click", () => {
+      if (!closeHandleDragged) {
+        setDrawerOpen(false, true);
+      }
+      closeHandleDragged = false;
+    });
+  }
 
   window.addEventListener("pointermove", onDrawerDragMove, { passive: false });
   window.addEventListener("pointerup", onDrawerDragEnd, { passive: true });
@@ -932,6 +997,14 @@ function applyDrawerProgress(progress, animate) {
 
   const translatePct = -100 + drawerProgress * 100;
   settingsDrawer.style.transform = `translateX(${translatePct}%)`;
+
+  if (menuCloseHandle) {
+    const drawerWidth = settingsDrawer.getBoundingClientRect().width || 0;
+    const handleLeft = drawerWidth * drawerProgress + 8;
+    menuCloseHandle.style.transition = animate ? "left 220ms ease, opacity 160ms ease, transform 160ms ease, border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease" : "opacity 160ms ease, transform 160ms ease, border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease";
+    menuCloseHandle.style.left = `${handleLeft}px`;
+    menuCloseHandle.classList.toggle("is-visible", drawerProgress > 0.15);
+  }
 
   if (drawerProgress <= 0.001) {
     menuOverlay.style.opacity = "0";
@@ -1179,10 +1252,10 @@ function refreshPowerRangeFill() {
   if (!ui.powerRangeFill) {
     return;
   }
-  const minPct = ((runtimeSettings.powerMin - MIN_POWER) / (MAX_POWER - MIN_POWER)) * 100;
-  const maxPct = ((runtimeSettings.powerMax - MIN_POWER) / (MAX_POWER - MIN_POWER)) * 100;
-  ui.powerRangeFill.style.left = `${minPct}%`;
-  ui.powerRangeFill.style.width = `${Math.max(0, maxPct - minPct)}%`;
+  const minFrac = (runtimeSettings.powerMin - MIN_POWER) / (MAX_POWER - MIN_POWER);
+  const maxFrac = (runtimeSettings.powerMax - MIN_POWER) / (MAX_POWER - MIN_POWER);
+  ui.powerRangeFill.style.setProperty("--fill-start", minFrac);
+  ui.powerRangeFill.style.setProperty("--fill-span", Math.max(0, maxFrac - minFrac));
 }
 
 function refreshSceneSwitchSliderBounds() {
@@ -1374,14 +1447,30 @@ function setupInfoButtonInteractions() {
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      focusElementWithoutScroll(button);
     });
 
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      focusElementWithoutScroll(button);
+      const wasOpen = button.classList.contains("is-tooltip-open");
+      closeAllInfoTooltips();
+      if (!wasOpen) {
+        button.classList.add("is-tooltip-open");
+      }
     });
+  }
+
+  document.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest(".info-button")) {
+      closeAllInfoTooltips();
+    }
+  });
+}
+
+function closeAllInfoTooltips() {
+  const openButtons = document.querySelectorAll(".info-button.is-tooltip-open");
+  for (const btn of openButtons) {
+    btn.classList.remove("is-tooltip-open");
   }
 }
 
@@ -2094,24 +2183,36 @@ function createShader(type, source) {
 }
 
 function createPaletteTextures() {
-  for (const palette of PALETTE_OPTIONS) {
-    const texture = gl.createTexture();
-    if (!texture) {
-      throw new Error("Failed to create palette texture.");
-    }
+  // Palette textures are created lazily in getOrCreatePaletteTexture().
+}
 
-    const lut = buildPaletteLut(palette, PALETTE_LUT_SIZE);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, PALETTE_LUT_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, lut);
-
-    paletteTexturesById.set(palette.id, texture);
+function getOrCreatePaletteTexture(paletteId) {
+  let texture = paletteTexturesById.get(paletteId);
+  if (texture) {
+    return texture;
   }
 
+  const palette = getPaletteById(paletteId);
+  if (!palette) {
+    return null;
+  }
+
+  texture = gl.createTexture();
+  if (!texture) {
+    throw new Error("Failed to create palette texture.");
+  }
+
+  const lut = buildPaletteLut(palette, PALETTE_LUT_SIZE);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, PALETTE_LUT_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, lut);
   gl.bindTexture(gl.TEXTURE_2D, null);
+
+  paletteTexturesById.set(paletteId, texture);
+  return texture;
 }
 
 function buildPaletteLut(palette, size) {
@@ -2240,7 +2341,7 @@ function parseHexRgb(hex) {
 }
 
 function setActivePalette(paletteId) {
-  activePaletteTexture = paletteTexturesById.get(paletteId) || paletteTexturesById.get(DEFAULT_RUNTIME_SETTINGS.paletteId) || null;
+  activePaletteTexture = getOrCreatePaletteTexture(paletteId) || getOrCreatePaletteTexture(DEFAULT_RUNTIME_SETTINGS.paletteId) || null;
 }
 
 function setupPickerWorker() {
