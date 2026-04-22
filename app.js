@@ -1449,13 +1449,20 @@ function setupInfoButtonInteractions() {
       event.stopPropagation();
     });
 
+    button.addEventListener("pointerleave", () => {
+      button.classList.remove("is-tooltip-suppressed");
+    });
+
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       const wasOpen = button.classList.contains("is-tooltip-open");
       closeAllInfoTooltips();
       if (!wasOpen) {
+        button.classList.remove("is-tooltip-suppressed");
         button.classList.add("is-tooltip-open");
+      } else {
+        button.classList.add("is-tooltip-suppressed");
       }
     });
   }

@@ -1241,6 +1241,13 @@ select {
   transform: translateY(0);
 }
 
+.info-button.is-tooltip-suppressed:hover::after,
+.info-button.is-tooltip-suppressed:focus-visible::after,
+.info-button.is-tooltip-suppressed:focus::after {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
 .info-button.is-tooltip-open {
   border-color: color-mix(in srgb, var(--accent) 72%, transparent);
   background: var(--info-bg-hover);
