@@ -433,10 +433,26 @@ select {
   stroke-width: 2;
 }
 
+.hud-icon-pause,
+.hud-icon-play {
+  width: 17px;
+  height: 17px;
+}
+
 .hud-icon-play {
   display: none;
   fill: currentColor;
   stroke: none;
+}
+
+.hud-icon-pin {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linejoin: round;
+  fill-rule: evenodd;
 }
 
 #pause-scene-button[aria-pressed="true"] .hud-icon-pause {
